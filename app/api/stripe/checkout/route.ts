@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getStripe, STRIPE_PRO_PRICE_ID, isStripeConfigured } from "@/lib/stripe";
+import { getStripe, STRIPE_PRICE_IDS, isStripeConfigured } from "@/lib/stripe";
+import { PLANS, type Plan } from "@/lib/plans";
 
 export async function POST(req: NextRequest) {
   if (!isStripeConfigured()) {
@@ -16,6 +17,16 @@ export async function POST(req: NextRequest) {
   } = await sb.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  const body = await req.json().catch(() => ({}));
+  const plan: Plan = (body?.plan as Plan) ?? "pro";
+  if (plan === "free" || !PLANS[plan]) {
+    return NextResponse.json({ error: "Invalid plan" }, { status: 400 });
+  }
+  const priceId = STRIPE_PRICE_IDS[plan];
+  if (!priceId) {
+    return NextResponse.json({ error: `${plan} price ID not configured` }, { status: 503 });
+  }
+
   const stripe = getStripe()!;
   const origin = req.nextUrl.origin;
 
@@ -25,7 +36,8 @@ export async function POST(req: NextRequest) {
     .select("stripe_customer_id")
     .eq("user_id", user.id)
     .maybeSingle();
-  let customerId = (existingSub as { stripe_customer_id: string | null } | null)?.stripe_customer_id ?? null;
+  let customerId =
+    (existingSub as { stripe_customer_id: string | null } | null)?.stripe_customer_id ?? null;
   if (!customerId) {
     const customer = await stripe.customers.create({
       email: user.email ?? undefined,
@@ -34,14 +46,17 @@ export async function POST(req: NextRequest) {
     customerId = customer.id;
   }
 
+  const trialDays = PLANS[plan].trialDays ?? 0;
+
   const session = await stripe.checkout.sessions.create({
     customer: customerId,
     mode: "subscription",
-    line_items: [{ price: STRIPE_PRO_PRICE_ID, quantity: 1 }],
+    line_items: [{ price: priceId, quantity: 1 }],
     success_url: `${origin}/?upgrade=success`,
     cancel_url: `${origin}/pro?canceled=1`,
     allow_promotion_codes: true,
-    metadata: { user_id: user.id },
+    subscription_data: trialDays > 0 ? { trial_period_days: trialDays } : undefined,
+    metadata: { user_id: user.id, plan },
   });
 
   return NextResponse.json({ url: session.url });

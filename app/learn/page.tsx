@@ -4,7 +4,7 @@ const SECTIONS: Array<{ title: string; body: string }> = [
   {
     title: "How paper trading works",
     body:
-      "You start with $100,000 in fake money. Every buy and sell uses real, live market prices — you just don't risk real cash. The goal: practice making decisions before there's something on the line.",
+      "You start with $10,000 in fake money — the Rookie account. Every buy and sell uses real, live market prices, but no real cash is at risk. Hit +10% to unlock the $50K Phase 1, then $100K, then bigger. The goal: practice making decisions before there's something on the line.",
   },
   {
     title: "What a strategy actually is",

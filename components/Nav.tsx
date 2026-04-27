@@ -9,7 +9,8 @@ import { TIERS } from "@/lib/tiers";
 import { cn } from "@/lib/cn";
 import TickerSearch from "./TickerSearch";
 import { signOut } from "@/lib/actions";
-import { LogOut, Sparkles } from "lucide-react";
+import { LogOut, Sparkles, Clock } from "lucide-react";
+import { effectivePlan, isTrialActive, trialDaysRemaining } from "@/lib/plans";
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -123,14 +124,46 @@ export default function Nav() {
           </Link>
         )}
 
-        {isAuth && !snapshot?.profile.is_pro && (
-          <Link
-            href="/pro"
-            className="hidden md:inline-flex items-center gap-1 text-[11px] uppercase tracking-wider text-[var(--color-up)] hover:opacity-80 px-2"
-          >
-            <Sparkles className="w-3 h-3" /> Pro
-          </Link>
-        )}
+        {isAuth && (() => {
+          if (!snapshot) return null;
+          const userPlan = effectivePlan(snapshot.profile);
+          const trialActive = isTrialActive(snapshot.profile.trial_until);
+          const trialDays = trialDaysRemaining(snapshot.profile.trial_until);
+          if (trialActive && userPlan === "pro" && snapshot.profile.plan === "free") {
+            return (
+              <Link
+                href="/pro"
+                className="hidden md:inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider px-3 py-1.5 rounded-md transition-opacity hover:opacity-80"
+                style={{
+                  background: "rgba(59, 130, 246, 0.12)",
+                  border: "1px solid rgba(59, 130, 246, 0.4)",
+                  color: "var(--color-phase1)",
+                }}
+              >
+                <Clock className="w-3 h-3" />
+                Pro trial · {trialDays}d left
+              </Link>
+            );
+          }
+          if (userPlan === "free") {
+            return (
+              <Link
+                href="/pro"
+                className="hidden md:inline-flex items-center gap-1 text-[11px] uppercase tracking-wider text-[var(--color-up)] hover:opacity-80 px-2"
+              >
+                <Sparkles className="w-3 h-3" /> Upgrade
+              </Link>
+            );
+          }
+          return (
+            <Link
+              href="/pro"
+              className="hidden md:inline-flex items-center gap-1 text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] px-2"
+            >
+              {userPlan.toUpperCase()}
+            </Link>
+          );
+        })()}
 
         {isAuth ? (
           <form action={signOut}>

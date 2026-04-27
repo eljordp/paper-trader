@@ -72,7 +72,7 @@ export const TIERS: Record<Tier, TierConfig> = {
   },
   pro: {
     id: "pro",
-    name: "Pro",
+    name: "Funded",
     startingCash: 250_000,
     unlockedBy: "phase2",
     rules: {

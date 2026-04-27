@@ -62,6 +62,8 @@ export type DBProfile = {
   active_account_id: string | null;
   default_risk_pct: number | null;
   cooldown_minutes: number | null;
+  plan: "free" | "pro" | "vip" | "enterprise";
+  trial_until: string | null;
   created_at: string;
 };
 

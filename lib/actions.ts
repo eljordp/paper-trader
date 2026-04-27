@@ -578,17 +578,29 @@ export async function createTierAccount(tier: Tier) {
 
   const { data: profile } = await sb
     .from("profiles")
-    .select("highest_tier_unlocked, is_pro")
+    .select("highest_tier_unlocked, plan, trial_until, pro_until")
     .eq("id", user.id)
     .single();
-  const highestUnlocked =
-    (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
-  const isPro = (profile as { is_pro: boolean } | null)?.is_pro ?? false;
+  const p = profile as {
+    highest_tier_unlocked: Tier;
+    plan: "free" | "pro" | "vip" | "enterprise";
+    trial_until: string | null;
+    pro_until: string | null;
+  } | null;
+  const highestUnlocked = p?.highest_tier_unlocked ?? "rookie";
   if (TIER_ORDER.indexOf(tier) > TIER_ORDER.indexOf(highestUnlocked)) {
     throw new Error(`${cfg.name} not unlocked yet`);
   }
-  if (tier !== "rookie" && !isPro) {
-    throw new Error(`${cfg.name} requires Pro. Upgrade at /pro.`);
+  // Plan-based gating
+  const { effectivePlan, planForTier, PLANS } = await import("@/lib/plans");
+  const userPlan = effectivePlan(p ?? {});
+  const requiredPlan = planForTier(tier);
+  if (
+    PLANS[userPlan].unlockedTiers.indexOf(tier) === -1
+  ) {
+    throw new Error(
+      `${cfg.name} requires ${PLANS[requiredPlan].name}. Upgrade at /pro.`
+    );
   }
 
   const { data, error } = await sb

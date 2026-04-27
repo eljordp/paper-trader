@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@supabase/supabase-js";
-import { getStripe, STRIPE_WEBHOOK_SECRET, isStripeConfigured } from "@/lib/stripe";
+import { getStripe, STRIPE_WEBHOOK_SECRET, isStripeConfigured, priceIdToPlan } from "@/lib/stripe";
 import type Stripe from "stripe";
 
 export const runtime = "nodejs";
@@ -11,6 +11,50 @@ function adminClient() {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false } }
   );
+}
+
+function periodEndIso(sub: Stripe.Subscription): string {
+  const ts = sub.items.data[0]?.current_period_end ?? Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
+  return new Date(ts * 1000).toISOString();
+}
+
+function planFromSub(sub: Stripe.Subscription): string {
+  const priceId = sub.items.data[0]?.price?.id ?? "";
+  return priceIdToPlan(priceId) ?? "pro";
+}
+
+async function syncSubscription(
+  sb: ReturnType<typeof adminClient>,
+  userId: string,
+  sub: Stripe.Subscription
+) {
+  const plan = planFromSub(sub);
+  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
+  const periodEnd = periodEndIso(sub);
+  const isActive = ["active", "trialing"].includes(sub.status);
+
+  await sb.from("subscriptions").upsert(
+    {
+      user_id: userId,
+      stripe_customer_id: customerId,
+      stripe_subscription_id: sub.id,
+      status: sub.status,
+      plan,
+      current_period_end: periodEnd,
+      cancel_at_period_end: sub.cancel_at_period_end,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "stripe_subscription_id" }
+  );
+
+  await sb
+    .from("profiles")
+    .update({
+      plan: isActive ? plan : "free",
+      is_pro: isActive,
+      pro_until: periodEnd,
+    })
+    .eq("id", userId);
 }
 
 export async function POST(req: NextRequest) {
@@ -40,29 +84,10 @@ export async function POST(req: NextRequest) {
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
         const userId = session.metadata?.user_id;
-        if (userId && session.subscription && session.customer) {
+        if (userId && session.subscription) {
           const subId = typeof session.subscription === "string" ? session.subscription : session.subscription.id;
-          const customerId = typeof session.customer === "string" ? session.customer : session.customer.id;
           const sub = await stripe.subscriptions.retrieve(subId);
-          await sb.from("subscriptions").upsert(
-            {
-              user_id: userId,
-              stripe_customer_id: customerId,
-              stripe_subscription_id: subId,
-              status: sub.status,
-              current_period_end: new Date((sub.items.data[0]?.current_period_end ?? Math.floor(Date.now() / 1000) + 30 * 24 * 3600) * 1000).toISOString(),
-              cancel_at_period_end: sub.cancel_at_period_end,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: "stripe_subscription_id" }
-          );
-          await sb
-            .from("profiles")
-            .update({
-              is_pro: ["active", "trialing"].includes(sub.status),
-              pro_until: new Date((sub.items.data[0]?.current_period_end ?? Math.floor(Date.now() / 1000) + 30 * 24 * 3600) * 1000).toISOString(),
-            })
-            .eq("id", userId);
+          await syncSubscription(sb, userId, sub);
         }
         break;
       }
@@ -75,27 +100,7 @@ export async function POST(req: NextRequest) {
           .eq("stripe_subscription_id", sub.id)
           .maybeSingle();
         const userId = (existing as { user_id: string } | null)?.user_id;
-        await sb.from("subscriptions").upsert(
-          {
-            user_id: userId,
-            stripe_customer_id: typeof sub.customer === "string" ? sub.customer : sub.customer.id,
-            stripe_subscription_id: sub.id,
-            status: sub.status,
-            current_period_end: new Date((sub.items.data[0]?.current_period_end ?? Math.floor(Date.now() / 1000) + 30 * 24 * 3600) * 1000).toISOString(),
-            cancel_at_period_end: sub.cancel_at_period_end,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "stripe_subscription_id" }
-        );
-        if (userId) {
-          await sb
-            .from("profiles")
-            .update({
-              is_pro: ["active", "trialing"].includes(sub.status),
-              pro_until: new Date((sub.items.data[0]?.current_period_end ?? Math.floor(Date.now() / 1000) + 30 * 24 * 3600) * 1000).toISOString(),
-            })
-            .eq("id", userId);
-        }
+        if (userId) await syncSubscription(sb, userId, sub);
         break;
       }
       case "customer.subscription.deleted": {
@@ -111,7 +116,7 @@ export async function POST(req: NextRequest) {
           .update({ status: "canceled", updated_at: new Date().toISOString() })
           .eq("stripe_subscription_id", sub.id);
         if (userId) {
-          await sb.from("profiles").update({ is_pro: false }).eq("id", userId);
+          await sb.from("profiles").update({ is_pro: false, plan: "free" }).eq("id", userId);
         }
         break;
       }
