@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePortfolio } from "./PortfolioProvider";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { buy as buyAction, sell as sellAction } from "@/lib/actions";
-import { Shield, Target, Pencil } from "lucide-react";
+import { Shield, Target, Pencil, Brain, AlertOctagon, AlertTriangle, CheckCircle2 } from "lucide-react";
+import type { TradeScore } from "@/lib/brain";
 
 export default function TradeTicket({
   ticker,
@@ -28,6 +29,8 @@ export default function TradeTicket({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const [score, setScore] = useState<TradeScore | null>(null);
+  const [scoreLoading, setScoreLoading] = useState(false);
 
   const cash = account ? Number(account.cash) : 0;
   const numQty = parseFloat(qty);
@@ -109,6 +112,42 @@ export default function TradeTicket({
       { label: "All", value: maxSell },
     ];
   }, [side, maxBuy, maxSell]);
+
+  // Debounced brain scoring — only on buy with valid qty/price
+  useEffect(() => {
+    if (side !== "buy" || !validQty || !account || price <= 0) {
+      setScore(null);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      setScoreLoading(true);
+      try {
+        const r = await fetch("/api/brain/score", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ticker,
+            side: "buy",
+            shares: numQty,
+            price,
+            stopLoss: slValid ? slNum : null,
+            takeProfit: tpValid ? tpNum : null,
+            notes: notes.trim() || null,
+          }),
+        });
+        if (r.ok) {
+          const data = (await r.json()) as TradeScore;
+          setScore(data);
+        }
+      } catch {
+        // Silent — scoring is best-effort
+      } finally {
+        setScoreLoading(false);
+      }
+    }, 900);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [side, ticker, numQty, price, slValid ? slNum : 0, tpValid ? tpNum : 0]);
 
   // Auto-size by risk %: needs a stop loss
   const autoSize = (riskPct: number) => {
@@ -295,6 +334,11 @@ export default function TradeTicket({
           <Row label="Buying power" value={money(cash)} muted />
         </div>
 
+        {/* Brain score card — only on buy with valid qty */}
+        {side === "buy" && validQty && (
+          <ScoreCard score={score} loading={scoreLoading} />
+        )}
+
         <button
           onClick={submit}
           disabled={!canSubmit || pending}
@@ -372,6 +416,86 @@ function BracketInput({
             : "border-[var(--color-border)] focus:border-[var(--color-border-strong)]"
         )}
       />
+    </div>
+  );
+}
+
+function ScoreCard({ score, loading }: { score: TradeScore | null; loading: boolean }) {
+  if (loading && !score) {
+    return (
+      <div className="bg-[var(--color-bg)] border border-[var(--color-border)] rounded-lg p-3 flex items-center gap-2.5">
+        <Brain className="w-4 h-4 text-[var(--color-text-faint)] animate-pulse" />
+        <div className="text-xs text-[var(--color-text-faint)]">Analyzing trade…</div>
+      </div>
+    );
+  }
+  if (!score) return null;
+
+  const tone =
+    score.score >= 8
+      ? { color: "var(--color-up)", rgb: "0, 227, 148", label: "Strong" }
+      : score.score >= 6
+      ? { color: "var(--color-cyan)", rgb: "79, 220, 224", label: "Decent" }
+      : score.score >= 4
+      ? { color: "var(--color-pro)", rgb: "245, 158, 11", label: "Weak" }
+      : { color: "var(--color-down)", rgb: "255, 77, 110", label: "Don't" };
+
+  return (
+    <div
+      className="rounded-lg p-3 space-y-2.5 transition-all"
+      style={{
+        background: `rgba(${tone.rgb}, 0.06)`,
+        border: `1px solid rgba(${tone.rgb}, 0.3)`,
+      }}
+    >
+      <div className="flex items-center gap-2.5">
+        <div
+          className="w-9 h-9 rounded-md flex items-center justify-center font-mono tnum text-base font-bold"
+          style={{
+            background: `rgba(${tone.rgb}, 0.18)`,
+            color: tone.color,
+            border: `1px solid rgba(${tone.rgb}, 0.4)`,
+          }}
+        >
+          {score.score}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <Brain className="w-3 h-3 text-[var(--color-text-faint)]" />
+            <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+              Trade analysis
+            </span>
+          </div>
+          <div className="text-sm font-medium leading-tight mt-0.5" style={{ color: tone.color }}>
+            {score.headline}
+          </div>
+        </div>
+      </div>
+      {score.insights.length > 0 && (
+        <ul className="space-y-1">
+          {score.insights.map((insight, i) => {
+            const flag = score.flags[i] ?? "warn";
+            const Icon =
+              flag === "ok"
+                ? CheckCircle2
+                : flag === "danger"
+                ? AlertOctagon
+                : AlertTriangle;
+            const iconClass =
+              flag === "ok"
+                ? "text-[var(--color-up)]"
+                : flag === "danger"
+                ? "text-[var(--color-down)]"
+                : "text-[var(--color-pro)]";
+            return (
+              <li key={i} className="flex items-start gap-1.5 text-[11px] leading-relaxed">
+                <Icon className={cn("w-3 h-3 shrink-0 mt-[2px]", iconClass)} />
+                <span className="text-[var(--color-text-dim)]">{insight}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
