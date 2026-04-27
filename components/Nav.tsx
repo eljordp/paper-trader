@@ -9,7 +9,7 @@ import { TIERS } from "@/lib/tiers";
 import { cn } from "@/lib/cn";
 import TickerSearch from "./TickerSearch";
 import { signOut } from "@/lib/actions";
-import { LogOut } from "lucide-react";
+import { LogOut, Sparkles } from "lucide-react";
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -120,6 +120,15 @@ export default function Nav() {
             >
               {change >= 0 ? "+" : ""}{changePct.toFixed(2)}%
             </span>
+          </Link>
+        )}
+
+        {isAuth && !snapshot?.profile.is_pro && (
+          <Link
+            href="/pro"
+            className="hidden md:inline-flex items-center gap-1 text-[11px] uppercase tracking-wider text-[var(--color-up)] hover:opacity-80 px-2"
+          >
+            <Sparkles className="w-3 h-3" /> Pro
           </Link>
         )}
 

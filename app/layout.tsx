@@ -3,6 +3,7 @@ import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import Nav from "@/components/Nav";
 import { PortfolioProvider } from "@/components/PortfolioProvider";
+import BracketWatcher from "@/components/BracketWatcher";
 import { loadPortfolio } from "@/lib/portfolio-data";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -33,6 +34,7 @@ export default async function RootLayout({
         <PortfolioProvider snapshot={snapshot}>
           <Nav />
           <main className="flex-1">{children}</main>
+          <BracketWatcher />
         </PortfolioProvider>
       </body>
     </html>

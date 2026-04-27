@@ -6,7 +6,8 @@ import { createTierAccount, switchAccount } from "@/lib/actions";
 import { useTransition, useState } from "react";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { Lock, Trophy, AlertTriangle, Plus, Check } from "lucide-react";
+import { Lock, Trophy, AlertTriangle, Plus, Check, Sparkles } from "lucide-react";
+import Link from "next/link";
 
 export default function AccountsPage() {
   const snapshot = usePortfolio();
@@ -17,6 +18,7 @@ export default function AccountsPage() {
 
   const highestUnlocked = snapshot.profile.highest_tier_unlocked as Tier;
   const activeId = snapshot.activeAccount?.id;
+  const isPro = snapshot.profile.is_pro;
 
   const handleCreate = (tier: Tier) => {
     setError(null);
@@ -56,6 +58,8 @@ export default function AccountsPage() {
           {TIER_ORDER.map((tier) => {
             const cfg = TIERS[tier];
             const unlocked = TIER_ORDER.indexOf(tier) <= TIER_ORDER.indexOf(highestUnlocked);
+            const requiresPro = tier !== "rookie";
+            const proLocked = requiresPro && !isPro;
             const existingAccount = snapshot.accounts.find((a) => a.tier === tier);
             return (
               <div
@@ -84,7 +88,7 @@ export default function AccountsPage() {
                   <RuleRow label="Min trading days" value={cfg.rules.minTradingDays?.toString() ?? "None"} />
                 </div>
 
-                {unlocked && !existingAccount && (
+                {unlocked && !existingAccount && !proLocked && (
                   <button
                     onClick={() => handleCreate(tier)}
                     disabled={pending}
@@ -92,6 +96,15 @@ export default function AccountsPage() {
                   >
                     <Plus className="w-3.5 h-3.5" /> Start {cfg.name}
                   </button>
+                )}
+
+                {unlocked && proLocked && !existingAccount && (
+                  <Link
+                    href="/pro"
+                    className="w-full h-9 rounded-md bg-[var(--color-up)] text-black text-sm font-medium hover:opacity-90 transition-opacity flex items-center justify-center gap-1.5"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" /> Upgrade to unlock
+                  </Link>
                 )}
 
                 {!unlocked && cfg.unlockedBy && (

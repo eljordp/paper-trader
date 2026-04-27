@@ -32,6 +32,8 @@ export type DBPosition = {
   shares: number;
   avg_cost: number;
   opened_at: string;
+  stop_loss: number | null;
+  take_profit: number | null;
 };
 
 export type DBTrade = {
@@ -45,6 +47,7 @@ export type DBTrade = {
   realized_pnl: number | null;
   notes: string | null;
   tags: string[] | null;
+  triggered_by: "manual" | "stop" | "target" | "eval_failed" | null;
   created_at: string;
 };
 

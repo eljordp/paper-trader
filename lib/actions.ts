@@ -3,8 +3,10 @@
 import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { TIERS, type Tier, computeEvalStatus, nextTier } from "@/lib/tiers";
-import { getQuote } from "@/lib/yahoo";
+import { getQuote, getQuotes } from "@/lib/yahoo";
 import { redirect } from "next/navigation";
+
+const TIER_ORDER: Tier[] = ["rookie", "phase1", "phase2", "pro", "elite"];
 
 async function requireUser() {
   const sb = await createClient();
@@ -27,10 +29,189 @@ async function requireAccount(accountId: string) {
   return { sb, user, account: data };
 }
 
+async function snapshotEquity(
+  sb: Awaited<ReturnType<typeof createClient>>,
+  accountId: string
+) {
+  const { data: account } = await sb
+    .from("accounts")
+    .select("cash")
+    .eq("id", accountId)
+    .single();
+  if (!account) return;
+  const { data: positions } = await sb
+    .from("positions")
+    .select("ticker, shares, avg_cost")
+    .eq("account_id", accountId);
+  const tickers = (positions ?? []).map((p) => (p as { ticker: string }).ticker);
+  let positionsValue = 0;
+  if (tickers.length > 0) {
+    const quotes = await getQuotes(tickers);
+    positionsValue = (positions ?? []).reduce((acc, p) => {
+      const r = p as { ticker: string; shares: number; avg_cost: number };
+      const px = quotes[r.ticker]?.price ?? Number(r.avg_cost);
+      return acc + Number(r.shares) * px;
+    }, 0);
+  }
+  const cash = Number((account as { cash: number }).cash);
+  const equity = cash + positionsValue;
+  await sb.from("equity_snapshots").insert({
+    account_id: accountId,
+    cash,
+    positions_value: positionsValue,
+    equity,
+  });
+}
+
+type AccountRow = {
+  id: string;
+  user_id: string;
+  tier: string;
+  status: string;
+  cash: number;
+  starting_cash: number;
+  high_water_mark: number;
+  trading_days_count: number;
+  last_trading_date: string | null;
+  daily_loss_limit_pct: number | null;
+  profit_target_pct: number | null;
+  max_drawdown_pct: number | null;
+  min_trading_days: number | null;
+};
+
+async function applySell(opts: {
+  sb: Awaited<ReturnType<typeof createClient>>;
+  user: { id: string };
+  account: AccountRow;
+  ticker: string;
+  qty: number;
+  price: number;
+  triggeredBy: "manual" | "stop" | "target" | "eval_failed";
+  notes?: string;
+}) {
+  const { sb, user, account, ticker, qty, price, triggeredBy } = opts;
+
+  const { data: pos } = await sb
+    .from("positions")
+    .select("*")
+    .eq("account_id", account.id)
+    .eq("ticker", ticker)
+    .maybeSingle();
+  if (!pos) throw new Error(`No position in ${ticker}`);
+  const position = pos as { shares: number; avg_cost: number };
+  if (qty > Number(position.shares) + 1e-6) {
+    throw new Error(`Only have ${position.shares} shares`);
+  }
+
+  const proceeds = qty * price;
+  const realizedPnl = qty * (price - Number(position.avg_cost));
+  const remainShares = Number(position.shares) - qty;
+
+  if (remainShares < 1e-6) {
+    await sb.from("positions").delete().eq("account_id", account.id).eq("ticker", ticker);
+  } else {
+    await sb
+      .from("positions")
+      .update({ shares: remainShares })
+      .eq("account_id", account.id)
+      .eq("ticker", ticker);
+  }
+
+  await sb.from("trades").insert({
+    account_id: account.id,
+    ticker,
+    side: "sell",
+    shares: qty,
+    price,
+    total: proceeds,
+    realized_pnl: realizedPnl,
+    triggered_by: triggeredBy,
+    notes: opts.notes ?? null,
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const isNewDay = account.last_trading_date !== today;
+  const newCash = Number(account.cash) + proceeds;
+
+  // Compute new equity for HWM + eval check
+  const { data: remainingPositions } = await sb
+    .from("positions")
+    .select("ticker, shares, avg_cost")
+    .eq("account_id", account.id);
+  const remTickers = (remainingPositions ?? []).map((r) => (r as { ticker: string }).ticker);
+  let positionsValue = 0;
+  if (remTickers.length > 0) {
+    const quotes = await getQuotes(remTickers);
+    positionsValue = (remainingPositions ?? []).reduce((acc, p) => {
+      const r = p as { ticker: string; shares: number; avg_cost: number };
+      const px = quotes[r.ticker]?.price ?? Number(r.avg_cost);
+      return acc + Number(r.shares) * px;
+    }, 0);
+  }
+  const newEquity = newCash + positionsValue;
+  const newHWM = Math.max(Number(account.high_water_mark), newEquity);
+
+  const evalStatus = computeEvalStatus({
+    tier: account.tier as Tier,
+    startingCash: Number(account.starting_cash),
+    currentEquity: newEquity,
+    highWaterMark: newHWM,
+    tradingDays: isNewDay ? Number(account.trading_days_count) + 1 : Number(account.trading_days_count),
+  });
+
+  const updates: Record<string, unknown> = {
+    cash: newCash,
+    high_water_mark: newHWM,
+    last_trading_date: today,
+    trading_days_count: isNewDay
+      ? Number(account.trading_days_count) + 1
+      : account.trading_days_count,
+  };
+
+  let unlockedTier: Tier | null = null;
+  if (evalStatus.status === "passed") {
+    updates.status = "passed";
+    updates.passed_at = new Date().toISOString();
+    const nt = nextTier(account.tier as Tier);
+    if (nt) {
+      const { data: profile } = await sb
+        .from("profiles")
+        .select("highest_tier_unlocked")
+        .eq("id", user.id)
+        .single();
+      const currentHighest =
+        (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
+      if (TIER_ORDER.indexOf(nt) > TIER_ORDER.indexOf(currentHighest)) {
+        await sb.from("profiles").update({ highest_tier_unlocked: nt }).eq("id", user.id);
+        unlockedTier = nt;
+      }
+    }
+  } else if (evalStatus.status === "failed") {
+    updates.status = "failed";
+    updates.failed_at = new Date().toISOString();
+    updates.failure_reason = evalStatus.failureReason ?? null;
+  }
+
+  await sb.from("accounts").update(updates).eq("id", account.id);
+  await sb.from("equity_snapshots").insert({
+    account_id: account.id,
+    cash: newCash,
+    positions_value: positionsValue,
+    equity: newEquity,
+  });
+
+  return { realizedPnl, evalStatus, unlockedTier };
+}
+
 export async function buy(formData: FormData) {
   const accountId = String(formData.get("accountId") ?? "");
   const ticker = String(formData.get("ticker") ?? "").toUpperCase();
   const qty = Number(formData.get("qty"));
+  const stopLossRaw = formData.get("stopLoss");
+  const takeProfitRaw = formData.get("takeProfit");
+  const notes = String(formData.get("notes") ?? "").trim() || null;
+  const stopLoss = stopLossRaw ? Number(stopLossRaw) : null;
+  const takeProfit = takeProfitRaw ? Number(takeProfitRaw) : null;
 
   if (!accountId || !ticker || !Number.isFinite(qty) || qty <= 0) {
     return { error: "Invalid input" };
@@ -43,22 +224,28 @@ export async function buy(formData: FormData) {
   }
 
   const quote = await getQuote(ticker).catch(() => null);
-  if (!quote || !quote.price) {
-    return { error: `Couldn't get a price for ${ticker}` };
+  if (!quote || !quote.price) return { error: `Couldn't get a price for ${ticker}` };
+
+  // Validate SL/TP relative to entry
+  if (stopLoss != null && stopLoss >= quote.price) {
+    return { error: `Stop loss must be below the current price ($${quote.price.toFixed(2)})` };
+  }
+  if (takeProfit != null && takeProfit <= quote.price) {
+    return { error: `Take profit must be above the current price ($${quote.price.toFixed(2)})` };
   }
 
   const total = qty * quote.price;
   if (total > Number(account.cash) + 1e-6) {
-    return { error: `Need ${total.toFixed(2)} but you have ${Number(account.cash).toFixed(2)}` };
+    return { error: `Need $${total.toFixed(2)} but you have $${Number(account.cash).toFixed(2)}` };
   }
 
-  // Daily loss limit check
+  // Daily loss check
   if (account.daily_loss_limit_pct != null) {
     const limit = (Number(account.starting_cash) * Number(account.daily_loss_limit_pct)) / 100;
     const today = new Date().toISOString().slice(0, 10);
     const { data: todayTrades } = await sb
       .from("trades")
-      .select("realized_pnl, created_at")
+      .select("realized_pnl")
       .eq("account_id", accountId)
       .gte("created_at", today);
     const todayRealized = (todayTrades ?? []).reduce(
@@ -70,7 +257,6 @@ export async function buy(formData: FormData) {
     }
   }
 
-  // Look up existing position
   const { data: existing } = await sb
     .from("positions")
     .select("*")
@@ -82,9 +268,12 @@ export async function buy(formData: FormData) {
     const ex = existing as { shares: number; avg_cost: number };
     const newShares = Number(ex.shares) + qty;
     const newCost = (Number(ex.shares) * Number(ex.avg_cost) + qty * quote.price) / newShares;
+    const update: Record<string, unknown> = { shares: newShares, avg_cost: newCost };
+    if (stopLoss != null) update.stop_loss = stopLoss;
+    if (takeProfit != null) update.take_profit = takeProfit;
     await sb
       .from("positions")
-      .update({ shares: newShares, avg_cost: newCost })
+      .update(update)
       .eq("account_id", accountId)
       .eq("ticker", ticker);
   } else {
@@ -93,6 +282,8 @@ export async function buy(formData: FormData) {
       ticker,
       shares: qty,
       avg_cost: quote.price,
+      stop_loss: stopLoss,
+      take_profit: takeProfit,
     });
   }
 
@@ -103,9 +294,10 @@ export async function buy(formData: FormData) {
     shares: qty,
     price: quote.price,
     total,
+    notes,
+    triggered_by: "manual",
   });
 
-  // Update account cash + trading day
   const today = new Date().toISOString().slice(0, 10);
   const isNewDay = account.last_trading_date !== today;
   await sb
@@ -119,6 +311,8 @@ export async function buy(formData: FormData) {
     })
     .eq("id", accountId);
 
+  await snapshotEquity(sb, accountId);
+
   revalidatePath("/", "layout");
   return { success: `Bought ${qty} ${ticker} @ $${quote.price.toFixed(2)}` };
 }
@@ -127,6 +321,7 @@ export async function sell(formData: FormData) {
   const accountId = String(formData.get("accountId") ?? "");
   const ticker = String(formData.get("ticker") ?? "").toUpperCase();
   const qty = Number(formData.get("qty"));
+  const notes = String(formData.get("notes") ?? "").trim() || undefined;
 
   if (!accountId || !ticker || !Number.isFinite(qty) || qty <= 0) {
     return { error: "Invalid input" };
@@ -138,129 +333,148 @@ export async function sell(formData: FormData) {
     return { error: `Account is ${account.status}, can't trade` };
   }
 
-  const { data: pos } = await sb
-    .from("positions")
-    .select("*")
-    .eq("account_id", accountId)
-    .eq("ticker", ticker)
-    .maybeSingle();
-
-  if (!pos) return { error: `No position in ${ticker}` };
-  const position = pos as { shares: number; avg_cost: number };
-  if (qty > Number(position.shares) + 1e-6) {
-    return { error: `Only have ${position.shares} shares` };
-  }
-
   const quote = await getQuote(ticker).catch(() => null);
   if (!quote || !quote.price) return { error: `Couldn't get a price for ${ticker}` };
 
-  const proceeds = qty * quote.price;
-  const realizedPnl = qty * (quote.price - Number(position.avg_cost));
-
-  const remainShares = Number(position.shares) - qty;
-  if (remainShares < 1e-6) {
-    await sb
-      .from("positions")
-      .delete()
-      .eq("account_id", accountId)
-      .eq("ticker", ticker);
-  } else {
-    await sb
-      .from("positions")
-      .update({ shares: remainShares })
-      .eq("account_id", accountId)
-      .eq("ticker", ticker);
+  try {
+    const result = await applySell({
+      sb,
+      user,
+      account: account as AccountRow,
+      ticker,
+      qty,
+      price: quote.price,
+      triggeredBy: "manual",
+      notes,
+    });
+    revalidatePath("/", "layout");
+    if (result.evalStatus.status === "passed") {
+      return {
+        success: `🎯 Sold ${qty} ${ticker} @ $${quote.price.toFixed(2)} — eval PASSED${
+          result.unlockedTier ? `! ${TIERS[result.unlockedTier].name} unlocked.` : "."
+        }`,
+      };
+    }
+    if (result.evalStatus.status === "failed") {
+      return {
+        error: `Sold ${qty} ${ticker} @ $${quote.price.toFixed(2)} — eval FAILED: ${result.evalStatus.failureReason}`,
+      };
+    }
+    return {
+      success: `Sold ${qty} ${ticker} @ $${quote.price.toFixed(2)} (${
+        result.realizedPnl >= 0 ? "+" : ""
+      }$${result.realizedPnl.toFixed(2)})`,
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Sell failed" };
   }
+}
 
-  await sb.from("trades").insert({
-    account_id: accountId,
-    ticker,
-    side: "sell",
-    shares: qty,
-    price: quote.price,
-    total: proceeds,
-    realized_pnl: realizedPnl,
-  });
+export async function setBracket(formData: FormData) {
+  const ticker = String(formData.get("ticker") ?? "").toUpperCase();
+  const stopLossRaw = formData.get("stopLoss");
+  const takeProfitRaw = formData.get("takeProfit");
+  const stopLoss = stopLossRaw && String(stopLossRaw).length > 0 ? Number(stopLossRaw) : null;
+  const takeProfit = takeProfitRaw && String(takeProfitRaw).length > 0 ? Number(takeProfitRaw) : null;
 
-  // Update cash + check eval rules
-  const today = new Date().toISOString().slice(0, 10);
-  const isNewDay = account.last_trading_date !== today;
-  const newCash = Number(account.cash) + proceeds;
+  const { sb, user } = await requireUser();
+  const { data: profile } = await sb
+    .from("profiles")
+    .select("active_account_id")
+    .eq("id", user.id)
+    .single();
+  const accountId = (profile as { active_account_id: string | null } | null)?.active_account_id;
+  if (!accountId) return { error: "No active account" };
 
-  // Compute new equity = cash + value of remaining positions
-  const { data: remainingPositions } = await sb
+  await sb
+    .from("positions")
+    .update({ stop_loss: stopLoss, take_profit: takeProfit })
+    .eq("account_id", accountId)
+    .eq("ticker", ticker);
+
+  revalidatePath("/", "layout");
+  return { success: "Bracket updated" };
+}
+
+export async function updateTradeNote(tradeId: string, note: string) {
+  const { sb, user } = await requireUser();
+  const trimmed = note.trim();
+  await sb
+    .from("trades")
+    .update({ notes: trimmed.length > 0 ? trimmed : null })
+    .eq("id", tradeId)
+    .in(
+      "account_id",
+      (
+        (await sb.from("accounts").select("id").eq("user_id", user.id)).data ?? []
+      ).map((a) => (a as { id: string }).id)
+    );
+  revalidatePath("/", "layout");
+}
+
+/**
+ * Scan active account positions for SL/TP triggers and auto-execute.
+ * Called by client polling AND by Vercel Cron.
+ */
+export async function checkBrackets(): Promise<{ triggered: Array<{ ticker: string; reason: "stop" | "target"; price: number }> }> {
+  const { sb, user } = await requireUser();
+  const { data: profile } = await sb
+    .from("profiles")
+    .select("active_account_id")
+    .eq("id", user.id)
+    .single();
+  const accountId = (profile as { active_account_id: string | null } | null)?.active_account_id;
+  if (!accountId) return { triggered: [] };
+
+  const { data: account } = await sb
+    .from("accounts")
+    .select("*")
+    .eq("id", accountId)
+    .single();
+  if (!account || account.status !== "active") return { triggered: [] };
+
+  const { data: positions } = await sb
     .from("positions")
     .select("*")
     .eq("account_id", accountId);
-  const positionsValue = await computePositionsValue(remainingPositions ?? []);
-  const newEquity = newCash + positionsValue;
-  const newHWM = Math.max(Number(account.high_water_mark), newEquity);
+  const withBrackets = (positions ?? []).filter(
+    (p) => (p as { stop_loss: number | null; take_profit: number | null }).stop_loss != null ||
+           (p as { stop_loss: number | null; take_profit: number | null }).take_profit != null
+  );
+  if (withBrackets.length === 0) return { triggered: [] };
 
-  // Eval status
-  const evalStatus = computeEvalStatus({
-    tier: account.tier as Tier,
-    startingCash: Number(account.starting_cash),
-    currentEquity: newEquity,
-    highWaterMark: newHWM,
-    tradingDays: isNewDay
-      ? Number(account.trading_days_count) + 1
-      : Number(account.trading_days_count),
-  });
-
-  const updates: Record<string, unknown> = {
-    cash: newCash,
-    high_water_mark: newHWM,
-    last_trading_date: today,
-    trading_days_count: isNewDay
-      ? Number(account.trading_days_count) + 1
-      : account.trading_days_count,
-  };
-
-  if (evalStatus.status === "passed") {
-    updates.status = "passed";
-    updates.passed_at = new Date().toISOString();
-    // Unlock next tier
-    const nt = nextTier(account.tier as Tier);
-    if (nt) {
-      const { data: profile } = await sb
-        .from("profiles")
-        .select("highest_tier_unlocked")
-        .eq("id", user.id)
-        .single();
-      const currentHighest = (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
-      const TIER_ORDER: Tier[] = ["rookie", "phase1", "phase2", "pro", "elite"];
-      if (TIER_ORDER.indexOf(nt) > TIER_ORDER.indexOf(currentHighest)) {
-        await sb.from("profiles").update({ highest_tier_unlocked: nt }).eq("id", user.id);
-      }
-    }
-  } else if (evalStatus.status === "failed") {
-    updates.status = "failed";
-    updates.failed_at = new Date().toISOString();
-    updates.failure_reason = evalStatus.failureReason ?? null;
-  }
-
-  await sb.from("accounts").update(updates).eq("id", accountId);
-
-  revalidatePath("/", "layout");
-
-  if (evalStatus.status === "passed") {
-    return { success: `🎯 Sold ${qty} ${ticker} @ $${quote.price.toFixed(2)} — eval PASSED!` };
-  }
-  if (evalStatus.status === "failed") {
-    return { error: `Sold ${qty} ${ticker} @ $${quote.price.toFixed(2)} — but eval FAILED: ${evalStatus.failureReason}` };
-  }
-  return { success: `Sold ${qty} ${ticker} @ $${quote.price.toFixed(2)} (${realizedPnl >= 0 ? "+" : ""}$${realizedPnl.toFixed(2)})` };
-}
-
-async function computePositionsValue(positions: Array<{ ticker: string; shares: number; avg_cost: number }>) {
-  if (positions.length === 0) return 0;
-  const tickers = positions.map((p) => p.ticker);
-  const { getQuotes } = await import("@/lib/yahoo");
+  const tickers = withBrackets.map((p) => (p as { ticker: string }).ticker);
   const quotes = await getQuotes(tickers);
-  return positions.reduce((acc, p) => {
-    const px = quotes[p.ticker]?.price ?? Number(p.avg_cost);
-    return acc + Number(p.shares) * px;
-  }, 0);
+
+  const triggered: Array<{ ticker: string; reason: "stop" | "target"; price: number }> = [];
+
+  for (const p of withBrackets) {
+    const pos = p as { ticker: string; shares: number; stop_loss: number | null; take_profit: number | null };
+    const px = quotes[pos.ticker]?.price;
+    if (!Number.isFinite(px)) continue;
+
+    let trigger: "stop" | "target" | null = null;
+    if (pos.stop_loss != null && px <= Number(pos.stop_loss)) trigger = "stop";
+    else if (pos.take_profit != null && px >= Number(pos.take_profit)) trigger = "target";
+
+    if (trigger) {
+      try {
+        await applySell({
+          sb,
+          user,
+          account: account as AccountRow,
+          ticker: pos.ticker,
+          qty: Number(pos.shares),
+          price: px,
+          triggeredBy: trigger,
+        });
+        triggered.push({ ticker: pos.ticker, reason: trigger, price: px });
+      } catch {}
+    }
+  }
+
+  if (triggered.length > 0) revalidatePath("/", "layout");
+  return { triggered };
 }
 
 export async function toggleWatchlist(ticker: string) {
@@ -284,16 +498,19 @@ export async function createTierAccount(tier: Tier) {
   const { sb, user } = await requireUser();
   const cfg = TIERS[tier];
 
-  // Verify unlocked
   const { data: profile } = await sb
     .from("profiles")
-    .select("highest_tier_unlocked")
+    .select("highest_tier_unlocked, is_pro")
     .eq("id", user.id)
     .single();
-  const TIER_ORDER: Tier[] = ["rookie", "phase1", "phase2", "pro", "elite"];
-  const highestUnlocked = (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
+  const highestUnlocked =
+    (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
+  const isPro = (profile as { is_pro: boolean } | null)?.is_pro ?? false;
   if (TIER_ORDER.indexOf(tier) > TIER_ORDER.indexOf(highestUnlocked)) {
     throw new Error(`${cfg.name} not unlocked yet`);
+  }
+  if (tier !== "rookie" && !isPro) {
+    throw new Error(`${cfg.name} requires Pro. Upgrade at /pro.`);
   }
 
   const { data, error } = await sb
@@ -339,6 +556,7 @@ export async function resetActiveAccount() {
 
   await sb.from("positions").delete().eq("account_id", activeId);
   await sb.from("trades").delete().eq("account_id", activeId);
+  await sb.from("equity_snapshots").delete().eq("account_id", activeId);
   await sb
     .from("accounts")
     .update({

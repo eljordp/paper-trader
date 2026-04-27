@@ -5,14 +5,19 @@ import Link from "next/link";
 import { usePortfolio } from "@/components/PortfolioProvider";
 import PositionsTable from "@/components/PositionsTable";
 import NewsList from "@/components/NewsList";
+import EquityCurve from "@/components/EquityCurve";
 import { money, pct } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { TermLabel } from "@/components/Tooltip";
-import { ArrowRight, Lock, Trophy, AlertTriangle } from "lucide-react";
+import { ArrowRight, Trophy, AlertTriangle } from "lucide-react";
 import { TIERS, type Tier, computeEvalStatus } from "@/lib/tiers";
 import { resetActiveAccount } from "@/lib/actions";
 
-export default function DashboardClient() {
+export default function DashboardClient({
+  equitySnapshots,
+}: {
+  equitySnapshots: Array<{ recorded_at: string; equity: number }>;
+}) {
   const snapshot = usePortfolio();
   const [prices, setPrices] = useState<Record<string, number>>({});
   const [movers, setMovers] = useState<{
@@ -186,6 +191,17 @@ export default function DashboardClient() {
               realized > 0 ? "text-[var(--color-up)]" : realized < 0 ? "text-[var(--color-down)]" : ""
             }
             sub="Closed trades"
+          />
+        </div>
+      </section>
+
+      {/* EQUITY CURVE */}
+      <section className="space-y-4">
+        <h2 className="font-serif text-3xl">Equity curve</h2>
+        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5">
+          <EquityCurve
+            snapshots={equitySnapshots}
+            startingCash={Number(account.starting_cash)}
           />
         </div>
       </section>

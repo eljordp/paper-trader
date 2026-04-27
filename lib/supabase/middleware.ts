@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_ROUTES = ["/login", "/auth/callback", "/learn"];
+const PUBLIC_ROUTES = ["/login", "/auth/callback", "/learn", "/pro"];
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -37,7 +37,8 @@ export async function updateSession(request: NextRequest) {
     path.startsWith("/api/chart") ||
     path.startsWith("/api/search") ||
     path.startsWith("/api/news") ||
-    path.startsWith("/api/movers");
+    path.startsWith("/api/movers") ||
+    path === "/api/stripe/webhook";
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();

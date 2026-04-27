@@ -5,6 +5,7 @@ import { usePortfolio } from "./PortfolioProvider";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { buy as buyAction, sell as sellAction } from "@/lib/actions";
+import { Shield, Target, Pencil } from "lucide-react";
 
 export default function TradeTicket({
   ticker,
@@ -19,6 +20,11 @@ export default function TradeTicket({
 
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [qty, setQty] = useState<string>("");
+  const [stopLoss, setStopLoss] = useState<string>("");
+  const [takeProfit, setTakeProfit] = useState<string>("");
+  const [notes, setNotes] = useState<string>("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -34,12 +40,30 @@ export default function TradeTicket({
   const insufficientFunds = side === "buy" && validQty && total > cash;
   const insufficientShares = side === "sell" && validQty && numQty > maxSell;
   const accountInactive = account && account.status !== "active";
+
+  // Risk math for SL
+  const slNum = parseFloat(stopLoss);
+  const tpNum = parseFloat(takeProfit);
+  const slValid = Number.isFinite(slNum) && slNum > 0 && slNum < price;
+  const tpValid = Number.isFinite(tpNum) && tpNum > 0 && tpNum > price;
+  const slInvalid = stopLoss.length > 0 && !slValid;
+  const tpInvalid = takeProfit.length > 0 && !tpValid;
+
+  const riskPerShare = slValid ? price - slNum : 0;
+  const totalRisk = riskPerShare * (validQty ? numQty : 0);
+  const riskPctOfAccount = totalRisk > 0 && account ? (totalRisk / Number(account.starting_cash)) * 100 : 0;
+  const rewardPerShare = tpValid ? tpNum - price : 0;
+  const totalReward = rewardPerShare * (validQty ? numQty : 0);
+  const rrRatio = riskPerShare > 0 && rewardPerShare > 0 ? rewardPerShare / riskPerShare : null;
+
   const canSubmit =
     !!account &&
     validQty &&
     !insufficientFunds &&
     !insufficientShares &&
     !accountInactive &&
+    !slInvalid &&
+    !tpInvalid &&
     price > 0;
 
   const submit = () => {
@@ -50,6 +74,11 @@ export default function TradeTicket({
     fd.set("accountId", account.id);
     fd.set("ticker", ticker);
     fd.set("qty", String(numQty));
+    if (side === "buy") {
+      if (slValid) fd.set("stopLoss", String(slNum));
+      if (tpValid) fd.set("takeProfit", String(tpNum));
+    }
+    if (notes.trim().length > 0) fd.set("notes", notes.trim());
     startTransition(async () => {
       const action = side === "buy" ? buyAction : sellAction;
       const res = await action(fd);
@@ -57,6 +86,9 @@ export default function TradeTicket({
       if (res?.success) {
         setSuccess(res.success);
         setQty("");
+        setStopLoss("");
+        setTakeProfit("");
+        setNotes("");
         setTimeout(() => setSuccess(null), 5000);
       }
     });
@@ -144,6 +176,89 @@ export default function TradeTicket({
           </div>
         </div>
 
+        {/* Bracket orders — only on buy */}
+        {side === "buy" && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((s) => !s)}
+              className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] flex items-center gap-1"
+            >
+              <Shield className="w-3 h-3" />
+              {showAdvanced ? "Hide" : "Add"} stop / target
+            </button>
+            {showAdvanced && (
+              <div className="space-y-2 pt-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <BracketInput
+                    icon={<Shield className="w-3 h-3" />}
+                    label="Stop"
+                    value={stopLoss}
+                    onChange={setStopLoss}
+                    placeholder={`< ${price.toFixed(2)}`}
+                    color="down"
+                    invalid={slInvalid}
+                  />
+                  <BracketInput
+                    icon={<Target className="w-3 h-3" />}
+                    label="Target"
+                    value={takeProfit}
+                    onChange={setTakeProfit}
+                    placeholder={`> ${price.toFixed(2)}`}
+                    color="up"
+                    invalid={tpInvalid}
+                  />
+                </div>
+                {(slValid || tpValid) && (
+                  <div className="bg-[var(--color-bg)] rounded-md p-2.5 space-y-1 text-[11px] font-mono">
+                    {slValid && validQty && (
+                      <div className="flex justify-between">
+                        <span className="text-[var(--color-text-faint)]">Risk</span>
+                        <span className="text-[var(--color-down)] tnum">
+                          ${totalRisk.toFixed(2)} ({riskPctOfAccount.toFixed(2)}%)
+                        </span>
+                      </div>
+                    )}
+                    {tpValid && validQty && (
+                      <div className="flex justify-between">
+                        <span className="text-[var(--color-text-faint)]">Reward</span>
+                        <span className="text-[var(--color-up)] tnum">+${totalReward.toFixed(2)}</span>
+                      </div>
+                    )}
+                    {rrRatio && (
+                      <div className="flex justify-between">
+                        <span className="text-[var(--color-text-faint)]">R/R</span>
+                        <span className="text-[var(--color-text)] tnum">{rrRatio.toFixed(2)} : 1</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Notes */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowNotes((s) => !s)}
+            className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] flex items-center gap-1"
+          >
+            <Pencil className="w-3 h-3" />
+            {showNotes ? "Hide" : "Add"} note
+          </button>
+          {showNotes && (
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Why this trade? Setup, thesis, conviction…"
+              rows={2}
+              className="mt-2 w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-3 py-2 text-xs placeholder:text-[var(--color-text-faint)] focus:outline-none focus:border-[var(--color-border-strong)] resize-none"
+            />
+          )}
+        </div>
+
         <div className="hairline pt-3 space-y-1.5 text-sm">
           <Row label="Price" value={money(price)} />
           <Row label="Estimated total" value={money(total)} bold />
@@ -168,6 +283,10 @@ export default function TradeTicket({
             ? "Not enough cash"
             : insufficientShares
             ? "Not enough shares"
+            : slInvalid
+            ? "Invalid stop"
+            : tpInvalid
+            ? "Invalid target"
             : `${side === "buy" ? "Buy" : "Sell"} ${ticker}`}
         </button>
 
@@ -182,6 +301,47 @@ export default function TradeTicket({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function BracketInput({
+  icon,
+  label,
+  value,
+  onChange,
+  placeholder,
+  color,
+  invalid,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  color: "up" | "down";
+  invalid: boolean;
+}) {
+  return (
+    <div>
+      <div className="flex items-center gap-1 mb-1">
+        <span className={color === "up" ? "text-[var(--color-up)]" : "text-[var(--color-down)]"}>{icon}</span>
+        <label className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">{label}</label>
+      </div>
+      <input
+        type="number"
+        step="0.01"
+        min="0"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={cn(
+          "w-full bg-[var(--color-bg)] border rounded-md px-2.5 h-8 text-sm tnum font-mono focus:outline-none",
+          invalid
+            ? "border-[var(--color-down)]/50 focus:border-[var(--color-down)]"
+            : "border-[var(--color-border)] focus:border-[var(--color-border-strong)]"
+        )}
+      />
     </div>
   );
 }
