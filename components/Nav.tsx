@@ -9,8 +9,9 @@ import { TIERS } from "@/lib/tiers";
 import { cn } from "@/lib/cn";
 import TickerSearch from "./TickerSearch";
 import { signOut } from "@/lib/actions";
-import { LogOut, Sparkles, Clock } from "lucide-react";
+import { LogOut, Sparkles, Clock, Shield } from "lucide-react";
 import { effectivePlan, isTrialActive, trialDaysRemaining } from "@/lib/plans";
+import { highestRole, ROLES } from "@/lib/roles";
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -162,6 +163,26 @@ export default function Nav() {
             >
               {userPlan.toUpperCase()}
             </Link>
+          );
+        })()}
+
+        {isAuth && snapshot && (() => {
+          const role = highestRole(snapshot.profile);
+          if (!role) return null;
+          const cfg = ROLES[role];
+          return (
+            <span
+              className="hidden sm:inline-flex items-center gap-1 text-[10px] uppercase font-medium tracking-[0.18em] px-2 py-1 rounded-full"
+              style={{
+                color: cfg.color,
+                backgroundColor: `rgba(${cfg.colorRgb}, 0.12)`,
+                border: `1px solid rgba(${cfg.colorRgb}, 0.4)`,
+              }}
+              title={`Role: ${cfg.label}`}
+            >
+              <Shield className="w-3 h-3" />
+              {cfg.label}
+            </span>
           );
         })()}
 

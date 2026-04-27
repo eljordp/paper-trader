@@ -64,6 +64,7 @@ export type DBProfile = {
   cooldown_minutes: number | null;
   plan: "free" | "pro" | "vip" | "enterprise";
   trial_until: string | null;
+  roles: string[] | null;
   created_at: string;
 };
 
