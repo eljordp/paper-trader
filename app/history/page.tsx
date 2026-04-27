@@ -7,14 +7,15 @@ import { cn } from "@/lib/cn";
 import { format } from "date-fns";
 
 export default function HistoryPage() {
-  const { portfolio, ready } = usePortfolio();
-  if (!ready || !portfolio) return null;
+  const snapshot = usePortfolio();
+  if (!snapshot) return null;
+  const trades = snapshot.trades;
 
   return (
     <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
       <h1 className="font-serif text-5xl">Trade history</h1>
 
-      {portfolio.trades.length === 0 ? (
+      {trades.length === 0 ? (
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-12 text-center">
           <div className="text-[var(--color-text-dim)] mb-1">No trades yet</div>
           <div className="text-xs text-[var(--color-text-faint)]">Search a ticker and place your first trade.</div>
@@ -30,13 +31,13 @@ export default function HistoryPage() {
             <div className="text-right">Total</div>
             <div className="text-right">Realized P&L</div>
           </div>
-          {portfolio.trades.map((t) => (
+          {trades.map((t) => (
             <div
               key={t.id}
               className="grid grid-cols-[1.2fr_0.6fr_1fr_0.8fr_1fr_1fr_1fr] gap-4 px-5 py-3 border-b border-[var(--color-border)] last:border-b-0 text-sm"
             >
               <div className="text-[var(--color-text-dim)] text-xs">
-                {format(new Date(t.timestamp), "MMM d, h:mm a")}
+                {format(new Date(t.created_at), "MMM d, h:mm a")}
               </div>
               <div>
                 <span
@@ -53,11 +54,11 @@ export default function HistoryPage() {
               <Link href={`/trade/${t.ticker}`} className="font-mono hover:underline">
                 {t.ticker}
               </Link>
-              <div className="text-right tnum font-mono">{fmtShares(t.shares)}</div>
-              <div className="text-right tnum font-mono">{money(t.price)}</div>
-              <div className="text-right tnum font-mono">{money(t.total)}</div>
-              <div className={cn("text-right tnum font-mono", t.realizedPnl != null ? pnlColor(t.realizedPnl) : "text-[var(--color-text-faint)]")}>
-                {t.realizedPnl != null ? `${t.realizedPnl >= 0 ? "+" : ""}${money(t.realizedPnl)}` : "—"}
+              <div className="text-right tnum font-mono">{fmtShares(Number(t.shares))}</div>
+              <div className="text-right tnum font-mono">{money(Number(t.price))}</div>
+              <div className="text-right tnum font-mono">{money(Number(t.total))}</div>
+              <div className={cn("text-right tnum font-mono", t.realized_pnl != null ? pnlColor(Number(t.realized_pnl)) : "text-[var(--color-text-faint)]")}>
+                {t.realized_pnl != null ? `${Number(t.realized_pnl) >= 0 ? "+" : ""}${money(Number(t.realized_pnl))}` : "—"}
               </div>
             </div>
           ))}

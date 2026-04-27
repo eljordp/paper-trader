@@ -3,6 +3,7 @@ import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import Nav from "@/components/Nav";
 import { PortfolioProvider } from "@/components/PortfolioProvider";
+import { loadPortfolio } from "@/lib/portfolio-data";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 const instrument = Instrument_Serif({
@@ -13,20 +14,23 @@ const instrument = Instrument_Serif({
 const jet = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jet" });
 
 export const metadata: Metadata = {
-  title: "Paper Trader — JDLO",
-  description: "Practice trading with real market data. No real money.",
+  title: "Paper Trader — Pass your funded eval",
+  description:
+    "Practice on real markets with real eval rules. Unlock $50K → $100K → $250K → $500K accounts as you prove yourself.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  const snapshot = await loadPortfolio();
+
   return (
     <html
       lang="en"
       className={`${inter.variable} ${instrument.variable} ${jet.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <PortfolioProvider>
+        <PortfolioProvider snapshot={snapshot}>
           <Nav />
           <main className="flex-1">{children}</main>
         </PortfolioProvider>

@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { usePortfolio } from "./PortfolioProvider";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/cn";
+import { buy as buyAction, sell as sellAction } from "@/lib/actions";
 
 export default function TradeTicket({
   ticker,
@@ -12,38 +13,53 @@ export default function TradeTicket({
   ticker: string;
   price: number;
 }) {
-  const { portfolio, buy, sell } = usePortfolio();
+  const snapshot = usePortfolio();
+  const account = snapshot?.activeAccount;
+  const position = snapshot?.positions.find((p) => p.ticker === ticker);
+
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [qty, setQty] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
 
-  const position = portfolio?.positions.find((p) => p.ticker === ticker);
-  const cash = portfolio?.cash ?? 0;
+  const cash = account ? Number(account.cash) : 0;
   const numQty = parseFloat(qty);
   const validQty = Number.isFinite(numQty) && numQty > 0;
   const total = validQty ? numQty * price : 0;
 
   const maxBuy = price > 0 ? Math.floor((cash / price) * 100) / 100 : 0;
-  const maxSell = position?.shares ?? 0;
+  const maxSell = position ? Number(position.shares) : 0;
 
   const insufficientFunds = side === "buy" && validQty && total > cash;
-  const insufficientShares = side === "sell" && validQty && numQty > (position?.shares ?? 0);
-  const canSubmit = validQty && !insufficientFunds && !insufficientShares && price > 0;
+  const insufficientShares = side === "sell" && validQty && numQty > maxSell;
+  const accountInactive = account && account.status !== "active";
+  const canSubmit =
+    !!account &&
+    validQty &&
+    !insufficientFunds &&
+    !insufficientShares &&
+    !accountInactive &&
+    price > 0;
 
   const submit = () => {
     setError(null);
     setSuccess(null);
-    if (!canSubmit) return;
-    try {
-      if (side === "buy") buy(ticker, numQty, price);
-      else sell(ticker, numQty, price);
-      setSuccess(`${side === "buy" ? "Bought" : "Sold"} ${numQty} ${ticker} @ ${money(price)}`);
-      setQty("");
-      setTimeout(() => setSuccess(null), 4000);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Trade failed");
-    }
+    if (!canSubmit || !account) return;
+    const fd = new FormData();
+    fd.set("accountId", account.id);
+    fd.set("ticker", ticker);
+    fd.set("qty", String(numQty));
+    startTransition(async () => {
+      const action = side === "buy" ? buyAction : sellAction;
+      const res = await action(fd);
+      if (res?.error) setError(res.error);
+      if (res?.success) {
+        setSuccess(res.success);
+        setQty("");
+        setTimeout(() => setSuccess(null), 5000);
+      }
+    });
   };
 
   const presets = useMemo(() => {
@@ -61,6 +77,14 @@ export default function TradeTicket({
       { label: "All", value: maxSell },
     ];
   }, [side, maxBuy, maxSell]);
+
+  if (!account) {
+    return (
+      <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5 text-sm text-[var(--color-text-dim)]">
+        Sign in to trade.
+      </div>
+    );
+  }
 
   return (
     <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5">
@@ -92,13 +116,9 @@ export default function TradeTicket({
       <div className="space-y-3">
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <label className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">
-              Shares
-            </label>
+            <label className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Shares</label>
             <div className="text-[11px] text-[var(--color-text-faint)]">
-              {side === "buy"
-                ? `Max ${maxBuy.toFixed(2)}`
-                : `Have ${maxSell}`}
+              {side === "buy" ? `Max ${maxBuy.toFixed(2)}` : `Have ${maxSell}`}
             </div>
           </div>
           <input
@@ -132,15 +152,19 @@ export default function TradeTicket({
 
         <button
           onClick={submit}
-          disabled={!canSubmit}
+          disabled={!canSubmit || pending}
           className={cn(
             "w-full h-11 rounded-md font-medium text-sm transition-colors",
-            !canSubmit && "bg-[var(--color-surface-2)] text-[var(--color-text-faint)] cursor-not-allowed",
-            canSubmit && side === "buy" && "bg-[var(--color-up)] text-black hover:opacity-90",
-            canSubmit && side === "sell" && "bg-[var(--color-down)] text-black hover:opacity-90"
+            (!canSubmit || pending) && "bg-[var(--color-surface-2)] text-[var(--color-text-faint)] cursor-not-allowed",
+            canSubmit && !pending && side === "buy" && "bg-[var(--color-up)] text-black hover:opacity-90",
+            canSubmit && !pending && side === "sell" && "bg-[var(--color-down)] text-black hover:opacity-90"
           )}
         >
-          {insufficientFunds
+          {pending
+            ? "Placing…"
+            : accountInactive
+            ? `Account ${account.status}`
+            : insufficientFunds
             ? "Not enough cash"
             : insufficientShares
             ? "Not enough shares"

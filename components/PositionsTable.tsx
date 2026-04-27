@@ -4,16 +4,15 @@ import Link from "next/link";
 import { usePortfolio } from "./PortfolioProvider";
 import { useEffect, useState } from "react";
 import { money, pct, pnlColor, shares as fmtShares } from "@/lib/format";
-import type { Position } from "@/lib/store";
 import { cn } from "@/lib/cn";
 
 export default function PositionsTable() {
-  const { portfolio } = usePortfolio();
+  const snapshot = usePortfolio();
   const [prices, setPrices] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    if (!portfolio || portfolio.positions.length === 0) return;
-    const symbols = portfolio.positions.map((p) => p.ticker).join(",");
+    if (!snapshot?.positions || snapshot.positions.length === 0) return;
+    const symbols = snapshot.positions.map((p) => p.ticker).join(",");
     let cancelled = false;
     const load = async () => {
       try {
@@ -31,9 +30,9 @@ export default function PositionsTable() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [portfolio]);
+  }, [snapshot]);
 
-  if (!portfolio || portfolio.positions.length === 0) {
+  if (!snapshot || snapshot.positions.length === 0) {
     return (
       <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-12 text-center">
         <div className="text-[var(--color-text-dim)] mb-1">No open positions</div>
@@ -42,10 +41,10 @@ export default function PositionsTable() {
     );
   }
 
-  const rows = portfolio.positions.map((pos) => {
+  const rows = snapshot.positions.map((pos) => {
     const px = prices[pos.ticker];
-    const value = (px ?? pos.avgCost) * pos.shares;
-    const cost = pos.avgCost * pos.shares;
+    const value = (px ?? Number(pos.avg_cost)) * Number(pos.shares);
+    const cost = Number(pos.avg_cost) * Number(pos.shares);
     const pnl = value - cost;
     const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
     return { pos, px, value, cost, pnl, pnlPct };
@@ -63,13 +62,13 @@ export default function PositionsTable() {
       </div>
       {rows.map(({ pos, px, value, pnl, pnlPct }) => (
         <Link
-          key={pos.ticker}
+          key={pos.id}
           href={`/trade/${pos.ticker}`}
           className="grid grid-cols-[1fr_repeat(5,minmax(0,1fr))] gap-4 px-5 py-3.5 border-b border-[var(--color-border)] last:border-b-0 hover:bg-[var(--color-surface-2)] transition-colors"
         >
           <div className="font-mono font-medium">{pos.ticker}</div>
-          <div className="text-right tnum font-mono text-sm">{fmtShares(pos.shares)}</div>
-          <div className="text-right tnum font-mono text-sm text-[var(--color-text-dim)]">{money(pos.avgCost)}</div>
+          <div className="text-right tnum font-mono text-sm">{fmtShares(Number(pos.shares))}</div>
+          <div className="text-right tnum font-mono text-sm text-[var(--color-text-dim)]">{money(Number(pos.avg_cost))}</div>
           <div className="text-right tnum font-mono text-sm">{px ? money(px) : "—"}</div>
           <div className="text-right tnum font-mono text-sm">{money(value)}</div>
           <div className={cn("text-right tnum font-mono text-sm", pnlColor(pnl))}>
@@ -80,8 +79,4 @@ export default function PositionsTable() {
       ))}
     </div>
   );
-}
-
-export function PositionRow({ position }: { position: Position }) {
-  return <div>{position.ticker}</div>;
 }

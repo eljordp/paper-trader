@@ -2,20 +2,22 @@
 
 import Link from "next/link";
 import { usePortfolio } from "@/components/PortfolioProvider";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import type { QuoteData } from "@/lib/yahoo";
 import { money, pct } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { Star } from "lucide-react";
+import { toggleWatchlist } from "@/lib/actions";
 
 export default function WatchlistPage() {
-  const { portfolio, ready, watch } = usePortfolio();
+  const snapshot = usePortfolio();
   const [quotes, setQuotes] = useState<Record<string, QuoteData>>({});
   const [adding, setAdding] = useState("");
+  const [, startTransition] = useTransition();
 
   useEffect(() => {
-    if (!portfolio || portfolio.watchlist.length === 0) return;
-    const symbols = portfolio.watchlist.join(",");
+    if (!snapshot || snapshot.watchlist.length === 0) return;
+    const symbols = snapshot.watchlist.join(",");
     let cancelled = false;
     const load = async () => {
       try {
@@ -30,9 +32,15 @@ export default function WatchlistPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [portfolio]);
+  }, [snapshot]);
 
-  if (!ready || !portfolio) return null;
+  if (!snapshot) return null;
+
+  const handleToggle = (sym: string) => {
+    startTransition(async () => {
+      await toggleWatchlist(sym);
+    });
+  };
 
   return (
     <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-6">
@@ -43,7 +51,7 @@ export default function WatchlistPage() {
             e.preventDefault();
             const sym = adding.trim().toUpperCase();
             if (sym) {
-              watch(sym);
+              handleToggle(sym);
               setAdding("");
             }
           }}
@@ -61,7 +69,7 @@ export default function WatchlistPage() {
         </form>
       </div>
 
-      {portfolio.watchlist.length === 0 ? (
+      {snapshot.watchlist.length === 0 ? (
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-12 text-center">
           <div className="text-[var(--color-text-dim)] mb-1">No tickers on your watchlist</div>
           <div className="text-xs text-[var(--color-text-faint)]">Add ones you want to track without owning yet.</div>
@@ -76,7 +84,7 @@ export default function WatchlistPage() {
             <div className="text-right">% Change</div>
             <div></div>
           </div>
-          {portfolio.watchlist.map((sym) => {
+          {snapshot.watchlist.map((sym) => {
             const q = quotes[sym];
             const up = q ? q.change >= 0 : false;
             return (
@@ -90,10 +98,7 @@ export default function WatchlistPage() {
                 <Link href={`/trade/${sym}`} className="text-sm text-[var(--color-text-dim)] truncate">
                   {q ? q.longName : "—"}
                 </Link>
-                <Link
-                  href={`/trade/${sym}`}
-                  className="text-right tnum font-mono text-sm"
-                >
+                <Link href={`/trade/${sym}`} className="text-right tnum font-mono text-sm">
                   {q ? money(q.price) : "—"}
                 </Link>
                 <Link
@@ -115,11 +120,11 @@ export default function WatchlistPage() {
                   {q ? pct(q.changePct) : "—"}
                 </Link>
                 <button
-                  onClick={() => watch(sym)}
-                  className="text-[var(--color-text-faint)] hover:text-[var(--color-down)] text-xs justify-self-end"
-                  title="Remove"
+                  onClick={() => handleToggle(sym)}
+                  className="text-yellow-300 hover:text-[var(--color-down)] text-xs justify-self-end"
+                  title="Remove from watchlist"
                 >
-                  <Star className="w-4 h-4 fill-yellow-300 text-yellow-300 hover:fill-none" />
+                  <Star className="w-4 h-4 fill-yellow-300 hover:fill-none" />
                 </button>
               </div>
             );

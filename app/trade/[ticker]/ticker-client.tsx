@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import type { QuoteData } from "@/lib/yahoo";
 import PriceChart from "@/components/PriceChart";
 import TradeTicket from "@/components/TradeTicket";
@@ -10,11 +10,13 @@ import { money, pct, compact } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { Star } from "lucide-react";
 import { usePortfolio } from "@/components/PortfolioProvider";
+import { toggleWatchlist } from "@/lib/actions";
 
 export default function TickerClient({ ticker, initialQuote }: { ticker: string; initialQuote: QuoteData }) {
   const [quote, setQuote] = useState<QuoteData>(initialQuote);
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
-  const { portfolio, watch } = usePortfolio();
+  const snapshot = usePortfolio();
+  const [, startTransition] = useTransition();
 
   useEffect(() => {
     let cancelled = false;
@@ -40,19 +42,18 @@ export default function TickerClient({ ticker, initialQuote }: { ticker: string;
   }, [ticker, initialQuote.price]);
 
   const isUp = quote.change >= 0;
-  const watched = portfolio?.watchlist.includes(ticker) ?? false;
-  const position = portfolio?.positions.find((p) => p.ticker === ticker);
+  const watched = snapshot?.watchlist.includes(ticker) ?? false;
+  const position = snapshot?.positions.find((p) => p.ticker === ticker);
 
   return (
     <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-8">
-      {/* HEADER */}
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div className="space-y-2">
           <div className="flex items-center gap-3">
             <h1 className="font-mono text-2xl tracking-tight">{quote.symbol}</h1>
             <span className="text-[var(--color-text-dim)] text-sm">{quote.longName}</span>
             <button
-              onClick={() => watch(ticker)}
+              onClick={() => startTransition(() => toggleWatchlist(ticker))}
               className="text-[var(--color-text-faint)] hover:text-yellow-300"
               title={watched ? "Remove from watchlist" : "Add to watchlist"}
             >
@@ -78,7 +79,6 @@ export default function TickerClient({ ticker, initialQuote }: { ticker: string;
         </div>
       </header>
 
-      {/* CHART + TICKET */}
       <div className="grid lg:grid-cols-[1fr_360px] gap-6">
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5">
           <PriceChart ticker={ticker} change={quote.change} />
@@ -86,39 +86,37 @@ export default function TickerClient({ ticker, initialQuote }: { ticker: string;
         <TradeTicket ticker={ticker} price={quote.price} />
       </div>
 
-      {/* POSITION */}
       {position && (
         <section className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5">
           <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] mb-3">Your position</div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
-            <StatTile label="Shares" value={position.shares} />
-            <StatTile label="Avg Cost" value={money(position.avgCost)} termKey="avgCost" />
-            <StatTile label="Market value" value={money(position.shares * quote.price)} />
+            <StatTile label="Shares" value={Number(position.shares)} />
+            <StatTile label="Avg Cost" value={money(Number(position.avg_cost))} termKey="avgCost" />
+            <StatTile label="Market value" value={money(Number(position.shares) * quote.price)} />
             <StatTile
               label="Unrealized P&L"
               termKey="unrealizedPnl"
               value={(() => {
-                const pnl = position.shares * (quote.price - position.avgCost);
+                const pnl = Number(position.shares) * (quote.price - Number(position.avg_cost));
                 return (pnl >= 0 ? "+" : "") + money(pnl);
               })()}
               valueClass={
-                position.shares * (quote.price - position.avgCost) >= 0
+                Number(position.shares) * (quote.price - Number(position.avg_cost)) >= 0
                   ? "text-[var(--color-up)]"
                   : "text-[var(--color-down)]"
               }
             />
             <StatTile
               label="Return"
-              value={pct(((quote.price - position.avgCost) / position.avgCost) * 100)}
+              value={pct(((quote.price - Number(position.avg_cost)) / Number(position.avg_cost)) * 100)}
               valueClass={
-                quote.price >= position.avgCost ? "text-[var(--color-up)]" : "text-[var(--color-down)]"
+                quote.price >= Number(position.avg_cost) ? "text-[var(--color-up)]" : "text-[var(--color-down)]"
               }
             />
           </div>
         </section>
       )}
 
-      {/* KEY STATS */}
       <section className="space-y-4">
         <h2 className="font-serif text-3xl">Key stats</h2>
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-6">
@@ -166,7 +164,6 @@ export default function TickerClient({ ticker, initialQuote }: { ticker: string;
         </div>
       </section>
 
-      {/* NEWS */}
       <section className="space-y-4">
         <h2 className="font-serif text-3xl">News on {ticker}</h2>
         <NewsList symbol={ticker} limit={10} />

@@ -4,21 +4,15 @@ import PositionsTable from "@/components/PositionsTable";
 import { usePortfolio } from "@/components/PortfolioProvider";
 import { useEffect, useState } from "react";
 import { money, pct } from "@/lib/format";
-import {
-  totalEquity,
-  totalRealizedPnl,
-  unrealizedPnl,
-  positionsValue,
-} from "@/lib/store";
 import { cn } from "@/lib/cn";
 
 export default function PortfolioPage() {
-  const { portfolio, ready } = usePortfolio();
+  const snapshot = usePortfolio();
   const [prices, setPrices] = useState<Record<string, number>>({});
 
   useEffect(() => {
-    if (!portfolio || portfolio.positions.length === 0) return;
-    const symbols = portfolio.positions.map((p) => p.ticker).join(",");
+    if (!snapshot?.positions || snapshot.positions.length === 0) return;
+    const symbols = snapshot.positions.map((p) => p.ticker).join(",");
     let cancelled = false;
     const load = async () => {
       try {
@@ -36,15 +30,25 @@ export default function PortfolioPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, [portfolio]);
+  }, [snapshot]);
 
-  if (!ready || !portfolio) return null;
-  const equity = totalEquity(portfolio, prices);
-  const totalPnl = equity - portfolio.startingCash;
-  const totalPnlPct = portfolio.startingCash > 0 ? (totalPnl / portfolio.startingCash) * 100 : 0;
-  const realized = totalRealizedPnl(portfolio);
-  const unrealized = unrealizedPnl(portfolio, prices);
-  const invested = positionsValue(portfolio, prices);
+  if (!snapshot || !snapshot.activeAccount) return null;
+
+  const account = snapshot.activeAccount;
+  const cash = Number(account.cash);
+  const invested = snapshot.positions.reduce((a, p) => {
+    const px = prices[p.ticker] ?? Number(p.avg_cost);
+    return a + Number(p.shares) * px;
+  }, 0);
+  const equity = cash + invested;
+  const totalPnl = equity - Number(account.starting_cash);
+  const totalPnlPct = Number(account.starting_cash) > 0 ? (totalPnl / Number(account.starting_cash)) * 100 : 0;
+  const realized = snapshot.trades.reduce((a, t) => a + Number(t.realized_pnl ?? 0), 0);
+  const unrealized = snapshot.positions.reduce((a, p) => {
+    const px = prices[p.ticker];
+    if (!Number.isFinite(px)) return a;
+    return a + Number(p.shares) * (px - Number(p.avg_cost));
+  }, 0);
 
   return (
     <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-8">
@@ -52,7 +56,7 @@ export default function PortfolioPage() {
 
       <section className="grid grid-cols-2 md:grid-cols-6 gap-px bg-[var(--color-border)] border border-[var(--color-border)] rounded-lg overflow-hidden">
         <Cell label="Equity" value={money(equity)} />
-        <Cell label="Cash" value={money(portfolio.cash)} />
+        <Cell label="Cash" value={money(cash)} />
         <Cell label="Invested" value={money(invested)} />
         <Cell
           label="P&L (all time)"
