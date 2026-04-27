@@ -61,17 +61,39 @@ export default function AccountsPage() {
             const requiresPro = tier !== "rookie";
             const proLocked = requiresPro && !isPro;
             const existingAccount = snapshot.accounts.find((a) => a.tier === tier);
+            const isElite = tier === "elite";
             return (
               <div
                 key={tier}
                 className={cn(
-                  "bg-[var(--color-surface)] border rounded-lg p-5 space-y-4",
-                  unlocked ? "border-[var(--color-border)]" : "border-[var(--color-border)] opacity-50"
+                  "relative bg-[var(--color-surface)] rounded-lg p-5 space-y-4 transition-all",
+                  unlocked ? "hover:-translate-y-1" : "opacity-50"
                 )}
+                style={{
+                  border: `1px solid ${
+                    unlocked ? `rgba(${cfg.colorRgb}, 0.5)` : "var(--color-border)"
+                  }`,
+                  boxShadow: unlocked
+                    ? `0 0 30px -16px rgba(${cfg.colorRgb}, 0.6)`
+                    : undefined,
+                }}
               >
+                {unlocked && (
+                  <div
+                    className="absolute inset-x-0 top-0 h-px"
+                    style={{
+                      background: `linear-gradient(90deg, transparent, rgba(${cfg.colorRgb}, 0.8), transparent)`,
+                    }}
+                  />
+                )}
                 <div className="flex items-start justify-between">
                   <div>
-                    <div className="font-serif text-2xl">{cfg.name}</div>
+                    <div
+                      className={cn("font-serif text-2xl", isElite && "holo-text")}
+                      style={!isElite ? { color: cfg.color } : undefined}
+                    >
+                      {cfg.name}
+                    </div>
                     <div className="font-mono tnum text-3xl mt-1">
                       ${(cfg.startingCash / 1000).toFixed(0)}K
                     </div>
@@ -92,7 +114,8 @@ export default function AccountsPage() {
                   <button
                     onClick={() => handleCreate(tier)}
                     disabled={pending}
-                    className="w-full h-9 rounded-md bg-[var(--color-text)] text-[var(--color-bg)] text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity flex items-center justify-center gap-1.5"
+                    className="btn-pulse w-full h-10 rounded-md text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-opacity flex items-center justify-center gap-1.5 text-black"
+                    style={{ backgroundColor: cfg.color }}
                   >
                     <Plus className="w-3.5 h-3.5" /> Start {cfg.name}
                   </button>
@@ -101,7 +124,10 @@ export default function AccountsPage() {
                 {unlocked && proLocked && !existingAccount && (
                   <Link
                     href="/pro"
-                    className="w-full h-9 rounded-md bg-[var(--color-up)] text-black text-sm font-medium hover:opacity-90 transition-opacity flex items-center justify-center gap-1.5"
+                    className="btn-pulse w-full h-10 rounded-md text-sm font-medium hover:opacity-90 transition-opacity flex items-center justify-center gap-1.5 text-black"
+                    style={{
+                      background: `linear-gradient(135deg, var(--color-pro), var(--color-elite))`,
+                    }}
                   >
                     <Sparkles className="w-3.5 h-3.5" /> Upgrade to unlock
                   </Link>

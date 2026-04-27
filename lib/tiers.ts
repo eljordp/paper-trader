@@ -13,6 +13,10 @@ export type TierConfig = {
   };
   description: string;
   blurb: string;
+  /** CSS color variable name (without `var()`) */
+  color: string;
+  /** RGB for inline alpha tinting */
+  colorRgb: string;
 };
 
 export const TIERS: Record<Tier, TierConfig> = {
@@ -22,13 +26,15 @@ export const TIERS: Record<Tier, TierConfig> = {
     startingCash: 10_000,
     unlockedBy: null,
     rules: {
-      profitTargetPct: 10, // hit +10% to unlock phase1
+      profitTargetPct: 10,
       dailyLossLimitPct: null,
       maxDrawdownPct: null,
       minTradingDays: null,
     },
     description: "$10K. No rules. Practice freely. Hit +10% to unlock the $50K Phase 1.",
     blurb: "Free play. Build conviction.",
+    color: "var(--color-rookie)",
+    colorRgb: "139, 149, 167",
   },
   phase1: {
     id: "phase1",
@@ -36,7 +42,7 @@ export const TIERS: Record<Tier, TierConfig> = {
     startingCash: 50_000,
     unlockedBy: "rookie",
     rules: {
-      profitTargetPct: 8, // FTMO Phase 1 = +8% target
+      profitTargetPct: 8,
       dailyLossLimitPct: 5,
       maxDrawdownPct: 10,
       minTradingDays: 5,
@@ -44,6 +50,8 @@ export const TIERS: Record<Tier, TierConfig> = {
     description:
       "$50K. FTMO-style rules: +8% target, max 5% daily loss, max 10% total drawdown, min 5 trading days.",
     blurb: "Funded eval simulation begins.",
+    color: "var(--color-phase1)",
+    colorRgb: "59, 130, 246",
   },
   phase2: {
     id: "phase2",
@@ -59,6 +67,8 @@ export const TIERS: Record<Tier, TierConfig> = {
     description:
       "$100K. The verification round. +5% target, same loss rules. Pass this and you're a real eval candidate.",
     blurb: "Verification.",
+    color: "var(--color-phase2)",
+    colorRgb: "168, 85, 247",
   },
   pro: {
     id: "pro",
@@ -74,6 +84,8 @@ export const TIERS: Record<Tier, TierConfig> = {
     description:
       "$250K. Where the real funded firms put you when you pass. Same rules, bigger size, bigger consequences.",
     blurb: "Funded trader territory.",
+    color: "var(--color-pro)",
+    colorRgb: "245, 158, 11",
   },
   elite: {
     id: "elite",
@@ -88,6 +100,8 @@ export const TIERS: Record<Tier, TierConfig> = {
     },
     description: "$500K. No rules. You've graduated. This is for free practice at scale.",
     blurb: "Graduated. Trade freely.",
+    color: "var(--color-elite)",
+    colorRgb: "236, 72, 153",
   },
 };
 

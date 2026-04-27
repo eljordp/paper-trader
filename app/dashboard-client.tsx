@@ -9,10 +9,11 @@ import EquityCurve from "@/components/EquityCurve";
 import { money, pct } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { TermLabel } from "@/components/Tooltip";
-import { ArrowRight, Trophy, AlertTriangle, Coffee, Flame, CheckCircle2, XCircle, Circle } from "lucide-react";
+import { ArrowRight, Trophy, AlertTriangle, Coffee, Flame, CheckCircle2, XCircle, Circle, Sparkles } from "lucide-react";
 import { TIERS, type Tier, computeEvalStatus } from "@/lib/tiers";
 import { resetActiveAccount } from "@/lib/actions";
 import { CHALLENGES } from "@/lib/challenges";
+import { celebrateChallenge, celebrateEvalPass, celebrateTierUnlock } from "@/lib/celebrate";
 
 export default function DashboardClient({
   equitySnapshots,
@@ -59,6 +60,25 @@ export default function DashboardClient({
       .then((d) => setMovers(d))
       .catch(() => {});
   }, []);
+
+  // Celebrate when challenge just completed (within last 10s)
+  useEffect(() => {
+    const c = snapshot?.todayChallenge;
+    if (!c?.completed || !c.completed_at) return;
+    const ageMs = Date.now() - new Date(c.completed_at).getTime();
+    if (ageMs < 10000) celebrateChallenge();
+  }, [snapshot?.todayChallenge?.completed, snapshot?.todayChallenge?.completed_at]);
+
+  // Celebrate eval pass
+  useEffect(() => {
+    if (snapshot?.activeAccount?.status === "passed" && snapshot.activeAccount.passed_at) {
+      const ageMs = Date.now() - new Date(snapshot.activeAccount.passed_at).getTime();
+      if (ageMs < 10000) {
+        celebrateEvalPass();
+        setTimeout(celebrateTierUnlock, 800);
+      }
+    }
+  }, [snapshot?.activeAccount?.status, snapshot?.activeAccount?.passed_at]);
 
   if (!snapshot || !snapshot.activeAccount) {
     return <div className="max-w-[1400px] mx-auto px-6 py-12 text-[var(--color-text-faint)]">loading…</div>;
@@ -117,12 +137,25 @@ export default function DashboardClient({
       <section className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-3 mb-2">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 text-[10px] uppercase font-medium tracking-[0.18em] px-2.5 py-1 rounded-full",
+                  account.tier === "elite" && "holo-text"
+                )}
+                style={{
+                  color: account.tier === "elite" ? undefined : tierConfig.color,
+                  backgroundColor: `rgba(${tierConfig.colorRgb}, 0.12)`,
+                  border: `1px solid rgba(${tierConfig.colorRgb}, 0.4)`,
+                }}
+              >
+                {tierConfig.name} · ${(tierConfig.startingCash / 1000).toFixed(0)}K
+              </span>
               <Link
                 href="/accounts"
                 className="text-[11px] uppercase tracking-[0.18em] text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)]"
               >
-                {tierConfig.name} Account · ${(tierConfig.startingCash / 1000).toFixed(0)}K
+                Switch
               </Link>
               {account.status === "passed" && (
                 <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-[var(--color-up)]/15 text-[var(--color-up)]">
@@ -135,7 +168,13 @@ export default function DashboardClient({
                 </span>
               )}
             </div>
-            <div className="font-serif text-6xl tnum tracking-tight leading-none">
+            <div
+              className={cn(
+                "font-serif text-6xl tnum tracking-tight leading-none",
+                totalPnl > 0 && "hero-glow",
+                totalPnl < 0 && "hero-glow-down"
+              )}
+            >
               {money(equity, { cents: true })}
             </div>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 items-baseline">
@@ -270,17 +309,31 @@ export default function DashboardClient({
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2 px-4 py-2 rounded-md bg-[var(--color-bg)]">
+            <div
+              className={cn(
+                "flex items-center gap-2.5 px-4 py-2.5 rounded-lg",
+                snapshot.challengeStreak > 0
+                  ? "bg-gradient-to-br from-orange-500/15 to-amber-500/5 border border-orange-500/30"
+                  : "bg-[var(--color-bg)] border border-[var(--color-border)]"
+              )}
+            >
               <Flame
                 className={cn(
-                  "w-4 h-4",
+                  "w-5 h-5",
                   snapshot.challengeStreak > 0
-                    ? "text-orange-400"
+                    ? "text-[var(--color-flame)] flame-flicker"
                     : "text-[var(--color-text-faint)]"
                 )}
               />
               <div>
-                <div className="font-mono tnum text-lg leading-none">{snapshot.challengeStreak}</div>
+                <div
+                  className={cn(
+                    "font-mono tnum text-xl leading-none",
+                    snapshot.challengeStreak > 0 && "text-[var(--color-flame)]"
+                  )}
+                >
+                  {snapshot.challengeStreak}
+                </div>
                 <div className="text-[9px] uppercase tracking-wider text-[var(--color-text-faint)] mt-0.5">
                   day streak
                 </div>
@@ -357,13 +410,13 @@ function CooldownBanner({ until }: { until: Date }) {
   const minutes = Math.floor(remaining / 60000);
   const seconds = Math.floor((remaining % 60000) / 1000);
   return (
-    <div className="flex items-center gap-3 bg-[var(--color-surface)] border-l-2 border-[var(--color-down)] px-5 py-3 rounded-md">
-      <Coffee className="w-4 h-4 text-[var(--color-down)] shrink-0" />
+    <div className="flex items-center gap-3 bg-gradient-to-r from-[var(--color-down)]/10 to-transparent border border-[var(--color-down)]/40 pulse-down px-5 py-3.5 rounded-lg">
+      <Coffee className="w-5 h-5 text-[var(--color-down)] shrink-0" />
       <div className="flex-1">
-        <div className="text-sm">Cooldown active — take a breath.</div>
+        <div className="text-sm font-medium">Cooldown active — take a breath.</div>
         <div className="text-xs text-[var(--color-text-dim)]">
           New trades blocked for{" "}
-          <span className="font-mono tnum">
+          <span className="font-mono tnum text-[var(--color-down)] font-medium">
             {minutes}:{seconds.toString().padStart(2, "0")}
           </span>
           . You hit a stop. Review what happened before re-entering.
@@ -404,17 +457,31 @@ function ProgressTile({
   progress: number;
   color: "up" | "down" | "neutral";
 }) {
-  const barColor = color === "up" ? "bg-[var(--color-up)]" : color === "down" ? "bg-[var(--color-down)]" : "bg-[var(--color-text-dim)]";
+  const gradient =
+    color === "up"
+      ? "linear-gradient(90deg, rgba(0,227,148,0.5), rgba(0,227,148,1))"
+      : color === "down"
+      ? "linear-gradient(90deg, rgba(255,77,110,0.5), rgba(255,77,110,1))"
+      : "linear-gradient(90deg, rgba(168,170,178,0.5), rgba(168,170,178,1))";
   return (
     <div className="bg-[var(--color-surface)] p-4 space-y-2">
       <div className="flex justify-between items-baseline">
         <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">{label}</div>
         <div className="text-xs font-mono tnum text-[var(--color-text-dim)]">{value}</div>
       </div>
-      <div className="h-1.5 w-full bg-[var(--color-bg)] rounded-full overflow-hidden">
+      <div className="h-2 w-full bg-[var(--color-bg)] rounded-full overflow-hidden">
         <div
-          className={cn("h-full transition-all", barColor)}
-          style={{ width: `${Math.min(100, progress * 100)}%` }}
+          className="h-full transition-all duration-500 ease-out rounded-full"
+          style={{
+            width: `${Math.min(100, progress * 100)}%`,
+            background: gradient,
+            boxShadow:
+              color === "up"
+                ? "0 0 8px rgba(0,227,148,0.4)"
+                : color === "down"
+                ? "0 0 8px rgba(255,77,110,0.4)"
+                : "none",
+          }}
         />
       </div>
     </div>

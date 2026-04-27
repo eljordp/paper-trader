@@ -1,35 +1,52 @@
 import Link from "next/link";
 import { TIERS, TIER_ORDER } from "@/lib/tiers";
 import { ArrowRight, Check, Shield, Target, BookOpen, BarChart3, Trophy } from "lucide-react";
+import { cn } from "@/lib/cn";
 
 export default function Landing() {
   return (
     <div>
       {/* HERO */}
-      <section className="max-w-[1100px] mx-auto px-6 pt-20 pb-24 md:pt-32 md:pb-40">
-        <div className="space-y-8 max-w-3xl">
-          <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--color-text-faint)]">
-            For traders prepping FTMO · Apex · Topstep · MyFundedFutures
+      <section className="max-w-[1100px] mx-auto px-6 pt-20 pb-24 md:pt-32 md:pb-40 relative">
+        <div className="space-y-8 max-w-3xl relative z-10">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[var(--color-surface)] border border-[var(--color-border)] text-[10px] uppercase tracking-[0.18em] text-[var(--color-text-dim)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-up)] animate-pulse" />
+            Live for FTMO · Apex · Topstep · MyFundedFutures candidates
           </div>
           <h1 className="font-serif text-5xl md:text-7xl leading-[0.95] tracking-tight">
             Pass your funded eval.<br />
-            Stop paying <span className="italic">$99</span> to learn the rules.
+            Stop paying{" "}
+            <span
+              className="italic"
+              style={{
+                background: "linear-gradient(135deg, var(--color-pro), var(--color-elite))",
+                WebkitBackgroundClip: "text",
+                backgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}
+            >
+              $99
+            </span>{" "}
+            to learn the rules.
           </h1>
           <p className="text-lg md:text-xl text-[var(--color-text-dim)] leading-relaxed max-w-2xl">
             A paper trading simulator built around the same rules real funded prop firms use.
-            Practice with a $10K account. Pass evals to unlock $50K, $100K, $250K, $500K.
+            Start with $10K. Pass evals to climb the ladder — $50K, $100K, $250K, $500K.
             Real markets. Real discipline. No real money on the line.
           </p>
           <div className="flex flex-wrap items-center gap-4">
             <Link
               href="/login"
-              className="inline-flex items-center gap-2 h-12 px-6 rounded-md bg-[var(--color-text)] text-[var(--color-bg)] text-sm font-medium hover:opacity-90 transition-opacity"
+              className="btn-pulse inline-flex items-center gap-2 h-12 px-6 rounded-md text-sm font-medium hover:opacity-90 text-black"
+              style={{
+                background: "linear-gradient(135deg, var(--color-up), #00b377)",
+              }}
             >
               Start free — $10K Rookie <ArrowRight className="w-4 h-4" />
             </Link>
             <Link
               href="/pro"
-              className="inline-flex items-center h-12 px-5 text-sm text-[var(--color-text-dim)] hover:text-[var(--color-text)] transition-colors"
+              className="inline-flex items-center h-12 px-5 text-sm text-[var(--color-text-dim)] hover:text-[var(--color-text)] border border-[var(--color-border)] rounded-md hover:border-[var(--color-border-strong)]"
             >
               See pricing
             </Link>
@@ -37,6 +54,31 @@ export default function Landing() {
           <div className="text-xs text-[var(--color-text-faint)] tracking-wide">
             Free forever. No credit card. Real Yahoo Finance market data.
           </div>
+        </div>
+
+        {/* Decorative side: floating tier badges */}
+        <div className="hidden lg:flex absolute right-6 top-32 flex-col gap-3 z-0">
+          {TIER_ORDER.slice(0, 5).map((tier, i) => {
+            const cfg = TIERS[tier];
+            return (
+              <div
+                key={tier}
+                className="float-soft px-4 py-2 rounded-lg backdrop-blur"
+                style={{
+                  background: `rgba(${cfg.colorRgb}, 0.08)`,
+                  border: `1px solid rgba(${cfg.colorRgb}, 0.4)`,
+                  animationDelay: `${i * 0.3}s`,
+                }}
+              >
+                <div className="text-[10px] uppercase tracking-wider" style={{ color: cfg.color }}>
+                  {cfg.name}
+                </div>
+                <div className="font-mono tnum text-sm mt-0.5">
+                  ${(cfg.startingCash / 1000).toFixed(0)}K
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -86,15 +128,34 @@ export default function Landing() {
         <div className="grid md:grid-cols-5 gap-3">
           {TIER_ORDER.map((tier) => {
             const cfg = TIERS[tier];
+            const isElite = tier === "elite";
             return (
               <div
                 key={tier}
-                className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5 space-y-3"
+                className="relative bg-[var(--color-surface)] rounded-lg p-5 space-y-3 transition-all hover:-translate-y-1"
+                style={{
+                  border: `1px solid rgba(${cfg.colorRgb}, 0.4)`,
+                  boxShadow: `0 0 30px -16px rgba(${cfg.colorRgb}, 0.6)`,
+                }}
               >
-                <div className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+                <div
+                  className="absolute inset-x-0 top-0 h-px"
+                  style={{
+                    background: `linear-gradient(90deg, transparent, rgba(${cfg.colorRgb}, 0.8), transparent)`,
+                  }}
+                />
+                <div
+                  className="font-mono text-[10px] uppercase tracking-wider"
+                  style={{ color: cfg.color }}
+                >
                   {cfg.name}
                 </div>
-                <div className="font-serif text-3xl tnum">${(cfg.startingCash / 1000).toFixed(0)}K</div>
+                <div
+                  className={cn("font-serif text-3xl tnum", isElite && "holo-text")}
+                  style={!isElite ? { color: cfg.color } : undefined}
+                >
+                  ${(cfg.startingCash / 1000).toFixed(0)}K
+                </div>
                 <div className="text-[11px] text-[var(--color-text-dim)] leading-relaxed">
                   {cfg.blurb}
                 </div>

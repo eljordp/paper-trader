@@ -1,17 +1,38 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #0a0a0a;
-  --color-surface: #131313;
-  --color-surface-2: #1a1a1a;
-  --color-border: #232323;
-  --color-border-strong: #333333;
-  --color-text: #ededed;
-  --color-text-dim: #a3a3a3;
-  --color-text-faint: #6e6e6e;
-  --color-up: #18c08f;
-  --color-down: #ff5566;
-  --color-accent: #ededed;
+  /* base */
+  --color-bg: #0b0c10;
+  --color-bg-warm: #0e0f14;
+  --color-surface: #15171f;
+  --color-surface-2: #1c1f29;
+  --color-surface-3: #232734;
+  --color-border: #292d39;
+  --color-border-strong: #3a3f4d;
+  --color-text: #f4f4f7;
+  --color-text-dim: #a8abb6;
+  --color-text-faint: #6b6f7a;
+
+  /* p&l */
+  --color-up: #00e394;
+  --color-up-glow: rgba(0, 227, 148, 0.18);
+  --color-down: #ff4d6e;
+  --color-down-glow: rgba(255, 77, 110, 0.18);
+
+  /* tier palette */
+  --color-rookie: #8b95a7;
+  --color-phase1: #3b82f6;
+  --color-phase2: #a855f7;
+  --color-pro: #f59e0b;
+  --color-elite: #ec4899;
+
+  /* accents */
+  --color-flame: #ff6b35;
+  --color-gold: #f5c542;
+  --color-cyan: #4fdce0;
+  --color-magenta: #ec4899;
+
+  /* fonts */
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-serif: var(--font-instrument), "Times New Roman", serif;
   --font-mono: var(--font-jet), ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -29,6 +50,21 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Subtle warm radial behind the page so it's not pure flat black */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(168, 85, 247, 0.06), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 100% 100%, rgba(0, 227, 148, 0.04), transparent 70%),
+    radial-gradient(ellipse 60% 50% at 0% 100%, rgba(245, 158, 11, 0.03), transparent 70%);
+  z-index: 0;
+}
+
+main, header { position: relative; z-index: 1; }
+
 .tnum {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
@@ -36,25 +72,132 @@ html, body {
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #383838; }
+::-webkit-scrollbar-thumb { background: #2a2d35; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3f4d; }
 
+/* P&L flash on price change */
 @keyframes flash-up {
-  0% { background-color: rgba(24, 192, 143, 0.18); }
-  100% { background-color: transparent; }
+  0% { background-color: var(--color-up-glow); transform: translateY(-1px); }
+  100% { background-color: transparent; transform: translateY(0); }
 }
 @keyframes flash-down {
-  0% { background-color: rgba(255, 85, 102, 0.18); }
-  100% { background-color: transparent; }
+  0% { background-color: var(--color-down-glow); transform: translateY(1px); }
+  100% { background-color: transparent; transform: translateY(0); }
 }
-.flash-up { animation: flash-up 0.6s ease-out; }
-.flash-down { animation: flash-down 0.6s ease-out; }
+.flash-up { animation: flash-up 0.7s cubic-bezier(0.4, 0, 0.2, 1); }
+.flash-down { animation: flash-down 0.7s cubic-bezier(0.4, 0, 0.2, 1); }
 
+/* Streak flame flicker */
+@keyframes flicker {
+  0%, 100% { transform: scale(1) rotate(-2deg); filter: drop-shadow(0 0 6px var(--color-flame)); }
+  25% { transform: scale(1.08) rotate(2deg); filter: drop-shadow(0 0 10px var(--color-flame)); }
+  50% { transform: scale(0.96) rotate(-1deg); filter: drop-shadow(0 0 8px var(--color-flame)); }
+  75% { transform: scale(1.04) rotate(1deg); filter: drop-shadow(0 0 12px var(--color-flame)); }
+}
+.flame-flicker { animation: flicker 1.4s ease-in-out infinite; }
+
+/* Subtle shimmer on hero number */
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+.text-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-text) 0%,
+    var(--color-text) 40%,
+    rgba(255, 255, 255, 0.85) 50%,
+    var(--color-text) 60%,
+    var(--color-text) 100%
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 6s linear infinite;
+}
+
+/* Cooldown banner pulse */
+@keyframes pulse-down {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 77, 110, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(255, 77, 110, 0); }
+}
+.pulse-down { animation: pulse-down 2s ease-out infinite; }
+
+/* Tier glow halo (only on active card) */
+.tier-glow-rookie { box-shadow: 0 0 0 1px var(--color-rookie), 0 0 30px -10px var(--color-rookie); }
+.tier-glow-phase1 { box-shadow: 0 0 0 1px var(--color-phase1), 0 0 30px -10px var(--color-phase1); }
+.tier-glow-phase2 { box-shadow: 0 0 0 1px var(--color-phase2), 0 0 30px -10px var(--color-phase2); }
+.tier-glow-pro    { box-shadow: 0 0 0 1px var(--color-pro), 0 0 30px -10px var(--color-pro); }
+.tier-glow-elite  { box-shadow: 0 0 0 1px var(--color-elite), 0 0 30px -10px var(--color-elite); }
+
+/* Holographic gradient for Elite tier */
+.holo-text {
+  background: linear-gradient(135deg, #f59e0b 0%, #ec4899 35%, #a855f7 70%, #4fdce0 100%);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: holo-shift 4s ease-in-out infinite;
+}
+@keyframes holo-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Button hover pulse */
+.btn-pulse {
+  position: relative;
+  overflow: hidden;
+}
+.btn-pulse::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.1),
+    transparent
+  );
+  transform: translateX(-100%);
+  transition: transform 0.6s;
+}
+.btn-pulse:hover::before {
+  transform: translateX(100%);
+}
+
+/* Hero gradient ring around hero number */
+.hero-glow {
+  text-shadow: 0 0 60px rgba(0, 227, 148, 0.18);
+}
+.hero-glow-down {
+  text-shadow: 0 0 60px rgba(255, 77, 110, 0.18);
+}
+
+/* Smooth float for badges */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+.float-soft { animation: float 3s ease-in-out infinite; }
+
+/* Hairline */
 .hairline { border-top: 1px solid var(--color-border); }
 
+/* Number input arrows off */
 input::-webkit-outer-spin-button,
 input::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
 input[type=number] { -moz-appearance: textfield; }
+
+/* Smooth transitions on interactive elements globally */
+button, a {
+  transition: transform 0.15s ease, opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+button:active, a:active {
+  transform: scale(0.985);
+}
