@@ -126,6 +126,8 @@ export function computeEvalStatus(opts: {
   currentEquity: number;
   highWaterMark: number;
   tradingDays: number;
+  /** Equity at last UTC midnight (null if first day). */
+  yesterdayClose?: number | null;
 }): EvalStatus {
   const tier = TIERS[opts.tier];
   const { profitTargetPct, dailyLossLimitPct, maxDrawdownPct, minTradingDays } = tier.rules;
@@ -133,7 +135,26 @@ export function computeEvalStatus(opts: {
   const profitPct = ((opts.currentEquity - opts.startingCash) / opts.startingCash) * 100;
   const drawdownPct = ((opts.startingCash - opts.currentEquity) / opts.startingCash) * 100;
 
-  // Failure conditions
+  // Daily loss limit (most common eval failure)
+  if (dailyLossLimitPct != null && opts.yesterdayClose != null) {
+    const dayLossPct = ((opts.yesterdayClose - opts.currentEquity) / opts.yesterdayClose) * 100;
+    if (dayLossPct >= dailyLossLimitPct) {
+      return {
+        status: "failed",
+        failureReason: `Daily loss limit of ${dailyLossLimitPct}% breached`,
+        progress: {
+          profitPct,
+          profitTargetPct,
+          drawdownPct,
+          maxDrawdownPct,
+          tradingDays: opts.tradingDays,
+          minTradingDays,
+        },
+      };
+    }
+  }
+
+  // Max total drawdown
   if (maxDrawdownPct != null && drawdownPct >= maxDrawdownPct) {
     return {
       status: "failed",

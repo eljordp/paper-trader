@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { TIERS, type Tier, computeEvalStatus, nextTier } from "@/lib/tiers";
 import { getQuote, getQuotes } from "@/lib/yahoo";
 import { redirect } from "next/navigation";
+import { todayUtcDate, type ChallengeType } from "@/lib/challenges";
 
 const TIER_ORDER: Tier[] = ["rookie", "phase1", "phase2", "pro", "elite"];
 
@@ -27,6 +28,34 @@ async function requireAccount(accountId: string) {
     .single();
   if (error || !data) throw new Error("Account not found");
   return { sb, user, account: data };
+}
+
+async function markChallenge(
+  sb: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  matchType: ChallengeType,
+  outcome: "completed" | "failed"
+) {
+  const today = todayUtcDate();
+  const { data } = await sb
+    .from("daily_challenges")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("challenge_date", today)
+    .maybeSingle();
+  if (!data) return;
+  const c = data as {
+    id: string;
+    challenge_type: ChallengeType;
+    completed: boolean;
+    failed: boolean;
+  };
+  if (c.challenge_type !== matchType || c.completed || c.failed) return;
+  const update: Record<string, unknown> =
+    outcome === "completed"
+      ? { completed: true, completed_at: new Date().toISOString() }
+      : { failed: true, failed_at: new Date().toISOString() };
+  await sb.from("daily_challenges").update(update).eq("id", c.id);
 }
 
 async function snapshotEquity(
@@ -151,12 +180,26 @@ async function applySell(opts: {
   const newEquity = newCash + positionsValue;
   const newHWM = Math.max(Number(account.high_water_mark), newEquity);
 
+  // Yesterday's close for daily loss check
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const { data: snap } = await sb
+    .from("equity_snapshots")
+    .select("equity")
+    .eq("account_id", account.id)
+    .lt("recorded_at", todayStart.toISOString())
+    .order("recorded_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const yesterdayClose = snap ? Number((snap as { equity: number }).equity) : null;
+
   const evalStatus = computeEvalStatus({
     tier: account.tier as Tier,
     startingCash: Number(account.starting_cash),
     currentEquity: newEquity,
     highWaterMark: newHWM,
     tradingDays: isNewDay ? Number(account.trading_days_count) + 1 : Number(account.trading_days_count),
+    yesterdayClose,
   });
 
   const updates: Record<string, unknown> = {
@@ -192,6 +235,19 @@ async function applySell(opts: {
     updates.failure_reason = evalStatus.failureReason ?? null;
   }
 
+  // Cooldown after stop-out (not manual losses — only when their stop fires)
+  if (opts.triggeredBy === "stop") {
+    const { data: profile } = await sb
+      .from("profiles")
+      .select("cooldown_minutes")
+      .eq("id", user.id)
+      .single();
+    const minutes = (profile as { cooldown_minutes: number | null } | null)?.cooldown_minutes ?? 15;
+    if (minutes > 0) {
+      updates.cooldown_until = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+    }
+  }
+
   await sb.from("accounts").update(updates).eq("id", account.id);
   await sb.from("equity_snapshots").insert({
     account_id: account.id,
@@ -221,6 +277,14 @@ export async function buy(formData: FormData) {
 
   if (account.status !== "active") {
     return { error: `Account is ${account.status}, can't trade` };
+  }
+
+  // Cooldown check
+  if (account.cooldown_until && new Date(account.cooldown_until).getTime() > Date.now()) {
+    const remaining = Math.ceil(
+      (new Date(account.cooldown_until).getTime() - Date.now()) / 60000
+    );
+    return { error: `Cooldown active — ${remaining} min remaining. Take a breath.` };
   }
 
   const quote = await getQuote(ticker).catch(() => null);
@@ -313,6 +377,14 @@ export async function buy(formData: FormData) {
 
   await snapshotEquity(sb, accountId);
 
+  // Daily challenge tracking
+  if (stopLoss != null) {
+    await markChallenge(sb, user.id, "use_stop", "completed");
+  }
+  if (takeProfit != null) {
+    await markChallenge(sb, user.id, "set_target", "completed");
+  }
+
   revalidatePath("/", "layout");
   return { success: `Bought ${qty} ${ticker} @ $${quote.price.toFixed(2)}` };
 }
@@ -347,6 +419,12 @@ export async function sell(formData: FormData) {
       triggeredBy: "manual",
       notes,
     });
+
+    // Daily challenge: profitable_close
+    if (result.realizedPnl > 0) {
+      await markChallenge(sb, user.id, "profitable_close", "completed");
+    }
+
     revalidatePath("/", "layout");
     if (result.evalStatus.status === "passed") {
       return {

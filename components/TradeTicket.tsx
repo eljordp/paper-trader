@@ -110,6 +110,17 @@ export default function TradeTicket({
     ];
   }, [side, maxBuy, maxSell]);
 
+  // Auto-size by risk %: needs a stop loss
+  const autoSize = (riskPct: number) => {
+    if (!slValid || !account) return;
+    const accountValue = Number(account.starting_cash);
+    const riskDollars = (accountValue * riskPct) / 100;
+    const stopDist = price - slNum;
+    if (stopDist <= 0) return;
+    const computedShares = Math.floor((riskDollars / stopDist) * 100) / 100;
+    if (computedShares > 0) setQty(String(computedShares));
+  };
+
   if (!account) {
     return (
       <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5 text-sm text-[var(--color-text-dim)]">
@@ -209,6 +220,25 @@ export default function TradeTicket({
                     invalid={tpInvalid}
                   />
                 </div>
+                {slValid && (
+                  <div className="space-y-2">
+                    <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+                      Auto-size for account risk
+                    </div>
+                    <div className="flex gap-1">
+                      {[0.5, 1, 2].map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => autoSize(p)}
+                          className="flex-1 py-1.5 text-[11px] font-mono rounded bg-[var(--color-bg)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] text-[var(--color-text-dim)] hover:text-[var(--color-text)] transition-colors"
+                        >
+                          {p}% R
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {(slValid || tpValid) && (
                   <div className="bg-[var(--color-bg)] rounded-md p-2.5 space-y-1 text-[11px] font-mono">
                     {slValid && validQty && (

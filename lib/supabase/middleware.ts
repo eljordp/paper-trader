@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_ROUTES = ["/login", "/auth/callback", "/learn", "/pro"];
+const PUBLIC_ROUTES = ["/login", "/auth/callback", "/learn", "/pro", "/terms", "/privacy"];
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -31,6 +31,7 @@ export async function updateSession(request: NextRequest) {
 
   const path = request.nextUrl.pathname;
   const isPublic =
+    path === "/" ||
     PUBLIC_ROUTES.some((p) => path === p || path.startsWith(p + "/")) ||
     path.startsWith("/api/quote") ||
     path.startsWith("/api/quotes") ||

@@ -3,6 +3,20 @@
 import { createClient } from "@/lib/supabase/server";
 import { TIERS, type Tier } from "@/lib/tiers";
 import type { DBAccount, DBPosition, DBProfile, DBTrade } from "@/lib/db";
+import { pickTodayChallenge, todayUtcDate, type ChallengeType } from "@/lib/challenges";
+
+export type DBChallenge = {
+  id: string;
+  user_id: string;
+  challenge_date: string;
+  challenge_type: ChallengeType;
+  challenge_data: Record<string, unknown> | null;
+  completed: boolean;
+  completed_at: string | null;
+  failed: boolean;
+  failed_at: string | null;
+  created_at: string;
+};
 
 export type PortfolioSnapshot = {
   profile: DBProfile;
@@ -11,6 +25,14 @@ export type PortfolioSnapshot = {
   positions: DBPosition[];
   trades: DBTrade[];
   watchlist: string[];
+  /** Equity at last snapshot before today's UTC midnight; null on first day. */
+  yesterdayClose: number | null;
+  /** Sum of realized P&L for today (UTC). */
+  todayRealizedPnl: number;
+  /** Today's daily challenge */
+  todayChallenge: DBChallenge | null;
+  /** Consecutive completed-challenge days, ending today or yesterday */
+  challengeStreak: number;
 };
 
 /**
@@ -83,8 +105,12 @@ export async function loadPortfolio(): Promise<PortfolioSnapshot | null> {
   // Positions + trades for active account
   let positions: DBPosition[] = [];
   let trades: DBTrade[] = [];
+  let yesterdayClose: number | null = null;
+  let todayRealizedPnl = 0;
   if (activeAccount) {
-    const [posRes, tradeRes] = await Promise.all([
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const [posRes, tradeRes, snapRes] = await Promise.all([
       sb.from("positions").select("*").eq("account_id", activeAccount.id),
       sb
         .from("trades")
@@ -92,9 +118,23 @@ export async function loadPortfolio(): Promise<PortfolioSnapshot | null> {
         .eq("account_id", activeAccount.id)
         .order("created_at", { ascending: false })
         .limit(200),
+      sb
+        .from("equity_snapshots")
+        .select("equity")
+        .eq("account_id", activeAccount.id)
+        .lt("recorded_at", todayStart.toISOString())
+        .order("recorded_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
     positions = (posRes.data as DBPosition[]) ?? [];
     trades = (tradeRes.data as DBTrade[]) ?? [];
+    if (snapRes.data) {
+      yesterdayClose = Number((snapRes.data as { equity: number }).equity);
+    }
+    todayRealizedPnl = trades
+      .filter((t) => new Date(t.created_at) >= todayStart)
+      .reduce((acc, t) => acc + Number(t.realized_pnl ?? 0), 0);
   }
 
   // Watchlist (per-user)
@@ -105,6 +145,54 @@ export async function loadPortfolio(): Promise<PortfolioSnapshot | null> {
     .order("created_at", { ascending: true });
   const watchlist = (watchRows ?? []).map((r) => (r as { ticker: string }).ticker);
 
+  // Daily challenge — get-or-create for today
+  const todayStr = todayUtcDate();
+  let { data: todayChallenge } = await sb
+    .from("daily_challenges")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("challenge_date", todayStr)
+    .maybeSingle();
+  if (!todayChallenge) {
+    const type = pickTodayChallenge(user.id, todayStr);
+    const { data: created } = await sb
+      .from("daily_challenges")
+      .insert({
+        user_id: user.id,
+        challenge_date: todayStr,
+        challenge_type: type,
+      })
+      .select()
+      .single();
+    todayChallenge = created;
+  }
+
+  // Streak — count back from today/yesterday: consecutive completed days
+  const { data: recentChallenges } = await sb
+    .from("daily_challenges")
+    .select("challenge_date, completed")
+    .eq("user_id", user.id)
+    .order("challenge_date", { ascending: false })
+    .limit(60);
+  let challengeStreak = 0;
+  if (recentChallenges) {
+    const completedDates = new Set(
+      (recentChallenges as Array<{ challenge_date: string; completed: boolean }>)
+        .filter((r) => r.completed)
+        .map((r) => r.challenge_date)
+    );
+    // Start from today; if today is not completed, start from yesterday
+    let cursor = new Date();
+    cursor.setUTCHours(0, 0, 0, 0);
+    if (!completedDates.has(cursor.toISOString().slice(0, 10))) {
+      cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
+    while (completedDates.has(cursor.toISOString().slice(0, 10))) {
+      challengeStreak++;
+      cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
+  }
+
   return {
     profile: profile as DBProfile,
     activeAccount: (activeAccount as DBAccount) ?? null,
@@ -112,5 +200,9 @@ export async function loadPortfolio(): Promise<PortfolioSnapshot | null> {
     positions,
     trades,
     watchlist,
+    yesterdayClose,
+    todayRealizedPnl,
+    todayChallenge: (todayChallenge as DBChallenge) ?? null,
+    challengeStreak,
   };
 }

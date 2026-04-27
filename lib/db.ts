@@ -22,6 +22,7 @@ export type DBAccount = {
   last_trading_date: string | null;
   passed_at: string | null;
   failed_at: string | null;
+  cooldown_until: string | null;
   created_at: string;
 };
 
@@ -59,6 +60,8 @@ export type DBProfile = {
   pro_until: string | null;
   highest_tier_unlocked: Tier;
   active_account_id: string | null;
+  default_risk_pct: number | null;
+  cooldown_minutes: number | null;
   created_at: string;
 };
 
