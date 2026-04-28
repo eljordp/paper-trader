@@ -128,6 +128,172 @@ ${recent}
 Score this trade now. Return JSON only.`;
 }
 
+// =============================================================================
+// EVAL COACH
+// =============================================================================
+
+export type EvalCoachOutput = {
+  passProbability: number; // 0-100
+  verdict: "on_track" | "at_risk" | "in_trouble" | "passed" | "failed";
+  headline: string; // 12 words max
+  mustDo: string[]; // 2-3 actions
+  biggestRisks: string[]; // 1-2 risks
+};
+
+export type EvalCoachInput = {
+  tier: string;
+  startingCash: number;
+  currentEquity: number;
+  cashAvailable: number;
+  drawdownPct: number;
+  highWaterMark: number;
+  rules: {
+    profitTargetPct: number | null;
+    dailyLossLimitPct: number | null;
+    maxDrawdownPct: number | null;
+    minTradingDays: number | null;
+  };
+  tradingDaysCount: number;
+  tradesPlaced: number;
+  closedTrades: number;
+  winRate: number | null; // 0-1
+  avgWinPct: number | null;
+  avgLossPct: number | null;
+  avgRR: number | null;
+  largestSingleLossPct: number | null;
+  daysSinceStart: number;
+  status: "active" | "passed" | "failed";
+};
+
+const COACH_SYSTEM = `You are a funded-eval coach analyzing a paper trader's chance of passing their evaluation.
+
+Real funded firms (FTMO, Apex, Topstep) charge $99–$1080 per attempt. Pass rates around 10%.
+Most fail not from bad picks but from rule violations or undisciplined sizing.
+
+Your job: estimate probability of passing this account's eval. Be quantitative and honest.
+
+Consider:
+- Profit target progress vs trading days remaining
+- Drawdown headroom (how close to max DD)
+- Win rate × avg R/R (expectancy) — projects forward
+- Daily loss limit risk (volatility of recent days)
+- Sample size (low N = high uncertainty)
+
+Output strict JSON:
+{
+  "passProbability": 0-100 integer,
+  "verdict": "on_track" | "at_risk" | "in_trouble" | "passed" | "failed",
+  "headline": "12 words max — the verdict",
+  "mustDo": ["specific action", ...],     // 2-3 actions, each <= 90 chars
+  "biggestRisks": ["specific risk", ...]   // 1-2 risks, each <= 90 chars
+}
+
+Rules of thumb:
+- 80%+ probability = "on_track"
+- 50-79% = "at_risk"
+- <50% = "in_trouble"
+- Already passed/failed = match status
+
+Be terse. No filler. Numbers > opinions.`;
+
+function buildCoachPrompt(input: EvalCoachInput): string {
+  const profitPct = ((input.currentEquity - input.startingCash) / input.startingCash) * 100;
+  const targetGap = input.rules.profitTargetPct ? input.rules.profitTargetPct - profitPct : null;
+  const ddHeadroom = input.rules.maxDrawdownPct
+    ? input.rules.maxDrawdownPct - input.drawdownPct
+    : null;
+  const daysLeft = input.rules.minTradingDays
+    ? Math.max(0, input.rules.minTradingDays - input.tradingDaysCount)
+    : 0;
+
+  return `ACCOUNT: ${input.tier} ($${(input.startingCash / 1000).toFixed(0)}K)
+Status: ${input.status}
+Days into eval: ${input.daysSinceStart}
+Trading days completed: ${input.tradingDaysCount}${input.rules.minTradingDays ? ` / ${input.rules.minTradingDays} required` : ""}
+
+PROFIT:
+  Current: ${profitPct >= 0 ? "+" : ""}${profitPct.toFixed(2)}%
+  Target: ${input.rules.profitTargetPct ? "+" + input.rules.profitTargetPct + "%" : "—"}
+  Gap to target: ${targetGap != null ? (targetGap >= 0 ? "+" : "") + targetGap.toFixed(2) + "%" : "—"}
+
+DRAWDOWN:
+  Current: ${input.drawdownPct.toFixed(2)}%
+  Limit: ${input.rules.maxDrawdownPct ? input.rules.maxDrawdownPct + "%" : "—"}
+  Headroom remaining: ${ddHeadroom != null ? ddHeadroom.toFixed(2) + "%" : "—"}
+  Daily loss limit: ${input.rules.dailyLossLimitPct ? input.rules.dailyLossLimitPct + "%" : "—"}
+
+PERFORMANCE:
+  Trades placed: ${input.tradesPlaced} (${input.closedTrades} closed)
+  Win rate: ${input.winRate != null ? (input.winRate * 100).toFixed(0) + "%" : "n/a"}
+  Avg winner: ${input.avgWinPct != null ? "+" + input.avgWinPct.toFixed(2) + "%" : "n/a"}
+  Avg loser: ${input.avgLossPct != null ? input.avgLossPct.toFixed(2) + "%" : "n/a"}
+  Avg R/R closed: ${input.avgRR != null ? input.avgRR.toFixed(2) : "n/a"}
+  Worst single trade: ${input.largestSingleLossPct != null ? input.largestSingleLossPct.toFixed(2) + "%" : "n/a"}
+
+REMAINING:
+  Min trading days remaining: ${daysLeft}
+  Cash available: $${input.cashAvailable.toFixed(0)} of $${input.startingCash.toFixed(0)}
+
+Estimate pass probability and tell them what to do. Return JSON only.`;
+}
+
+export async function runEvalCoach(input: EvalCoachInput): Promise<EvalCoachOutput | null> {
+  const oai = client();
+  if (!oai) return null;
+
+  // Skip if no rules (Rookie or Elite)
+  if (
+    input.rules.profitTargetPct == null &&
+    input.rules.maxDrawdownPct == null &&
+    input.rules.dailyLossLimitPct == null
+  ) {
+    return null;
+  }
+
+  // Pre-resolved cases
+  if (input.status === "passed") {
+    return {
+      passProbability: 100,
+      verdict: "passed",
+      headline: "Eval passed. Lock it in.",
+      mustDo: ["Spin up the next tier and apply the same discipline."],
+      biggestRisks: [],
+    };
+  }
+  if (input.status === "failed") {
+    return {
+      passProbability: 0,
+      verdict: "failed",
+      headline: "Eval failed. Review what broke.",
+      mustDo: ["Read your trade history. Identify the rule violation pattern."],
+      biggestRisks: [],
+    };
+  }
+
+  try {
+    const completion = await oai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: COACH_SYSTEM },
+        { role: "user", content: buildCoachPrompt(input) },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.3,
+      max_tokens: 500,
+    });
+    const raw = completion.choices[0]?.message?.content;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as EvalCoachOutput;
+    parsed.passProbability = Math.max(0, Math.min(100, Math.round(parsed.passProbability)));
+    parsed.mustDo = (parsed.mustDo ?? []).slice(0, 3);
+    parsed.biggestRisks = (parsed.biggestRisks ?? []).slice(0, 2);
+    return parsed;
+  } catch (e) {
+    console.error("[brain] runEvalCoach error:", e);
+    return null;
+  }
+}
+
 export async function scoreTrade(input: ScoreInput): Promise<TradeScore | null> {
   const oai = client();
   if (!oai) return null;

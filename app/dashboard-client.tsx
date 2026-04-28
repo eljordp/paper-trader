@@ -6,6 +6,7 @@ import { usePortfolio } from "@/components/PortfolioProvider";
 import PositionsTable from "@/components/PositionsTable";
 import NewsList from "@/components/NewsList";
 import EquityCurve from "@/components/EquityCurve";
+import EvalCoach from "@/components/EvalCoach";
 import { money, pct } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { TermLabel } from "@/components/Tooltip";
@@ -282,6 +283,13 @@ export default function DashboardClient({
           />
         </div>
       </section>
+
+      {/* EVAL COACH (only for accounts with eval rules) */}
+      {(tierConfig.rules.profitTargetPct != null || tierConfig.rules.maxDrawdownPct != null) && (
+        <section>
+          <EvalCoach accountId={account.id} />
+        </section>
+      )}
 
       {/* DAILY CHALLENGE */}
       {snapshot.todayChallenge && (
