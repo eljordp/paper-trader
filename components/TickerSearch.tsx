@@ -80,10 +80,14 @@ export default function TickerSearch() {
           {results.map((r, i) => (
             <button
               key={r.symbol}
+              type="button"
               onMouseEnter={() => setActive(i)}
-              onClick={() => go(r.symbol)}
-              className={`w-full flex items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
-                i === active ? "bg-[var(--color-surface-2)]" : ""
+              onMouseDown={(e) => {
+                e.preventDefault();
+                go(r.symbol);
+              }}
+              className={`w-full flex items-center justify-between px-3 py-2 text-left text-sm transition-colors cursor-pointer ${
+                i === active ? "bg-[var(--color-surface-2)]" : "hover:bg-[var(--color-surface-2)]"
               }`}
             >
               <div className="flex items-center gap-3 min-w-0">

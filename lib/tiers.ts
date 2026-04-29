@@ -23,15 +23,15 @@ export const TIERS: Record<Tier, TierConfig> = {
   rookie: {
     id: "rookie",
     name: "Rookie",
-    startingCash: 10_000,
+    startingCash: 25_000,
     unlockedBy: null,
     rules: {
-      profitTargetPct: 10,
+      profitTargetPct: 8,
       dailyLossLimitPct: null,
       maxDrawdownPct: null,
       minTradingDays: null,
     },
-    description: "$10K. No rules. Practice freely. Hit +10% to unlock the $50K Phase 1.",
+    description: "$25K. No rules. Practice freely. Hit +8% to unlock the $50K Phase 1.",
     blurb: "Free play. Build conviction.",
     color: "var(--color-rookie)",
     colorRgb: "139, 149, 167",
@@ -73,7 +73,7 @@ export const TIERS: Record<Tier, TierConfig> = {
   pro: {
     id: "pro",
     name: "Funded",
-    startingCash: 250_000,
+    startingCash: 150_000,
     unlockedBy: "phase2",
     rules: {
       profitTargetPct: 5,
@@ -82,15 +82,16 @@ export const TIERS: Record<Tier, TierConfig> = {
       minTradingDays: 5,
     },
     description:
-      "$250K. Where the real funded firms put you when you pass. Same rules, bigger size, bigger consequences.",
+      "$150K. Where the real funded firms put you when you pass. Same rules, bigger size, bigger consequences.",
     blurb: "Funded trader territory.",
     color: "var(--color-pro)",
     colorRgb: "245, 158, 11",
   },
+  // Kept for backward compat with existing rows; not surfaced in TIER_ORDER.
   elite: {
     id: "elite",
     name: "Elite",
-    startingCash: 500_000,
+    startingCash: 250_000,
     unlockedBy: "pro",
     rules: {
       profitTargetPct: null,
@@ -98,14 +99,14 @@ export const TIERS: Record<Tier, TierConfig> = {
       maxDrawdownPct: null,
       minTradingDays: null,
     },
-    description: "$500K. No rules. You've graduated. This is for free practice at scale.",
+    description: "$250K. No rules. Free practice at scale.",
     blurb: "Graduated. Trade freely.",
     color: "var(--color-elite)",
     colorRgb: "236, 72, 153",
   },
 };
 
-export const TIER_ORDER: Tier[] = ["rookie", "phase1", "phase2", "pro", "elite"];
+export const TIER_ORDER: Tier[] = ["rookie", "phase1", "phase2", "pro"];
 
 export function nextTier(t: Tier): Tier | null {
   const i = TIER_ORDER.indexOf(t);

@@ -61,7 +61,7 @@ export const PLANS: Record<Plan, PlanConfig> = {
     blurb: "/mo",
     features: [
       "Everything in Pro",
-      "$250K Funded account",
+      "$150K Funded account",
       "Options trading (calls / puts / spreads)",
       "Futures (micro contracts: MNQ, MES, MGC, MCL)",
       "Replay any past trading day",
@@ -79,7 +79,6 @@ export const PLANS: Record<Plan, PlanConfig> = {
     blurb: "/mo — for trading rooms & mentors",
     features: [
       "Everything in VIP",
-      "$500K Elite account",
       "Team accounts (mentor + students)",
       "Custom branded leaderboard",
       "Custom eval rule profiles",
@@ -87,7 +86,7 @@ export const PLANS: Record<Plan, PlanConfig> = {
       "White-glove onboarding call",
     ],
     ctaLabel: "Talk to sales",
-    unlockedTiers: ["rookie", "phase1", "phase2", "pro", "elite"],
+    unlockedTiers: ["rookie", "phase1", "phase2", "pro"],
   },
 };
 
