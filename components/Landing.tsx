@@ -31,7 +31,7 @@ export default function Landing() {
           </h1>
           <p className="text-lg md:text-xl text-[var(--color-text-dim)] leading-relaxed max-w-2xl">
             A paper trading simulator built around the same rules real funded prop firms use.
-            Start with $10K. Pass evals to climb the ladder — $50K, $100K, $250K, $500K.
+            Start with $25K. Pass evals to climb the ladder — $50K, $100K, $150K.
             Real markets. Real discipline. No real money on the line.
           </p>
           <div className="flex flex-wrap items-center gap-4">
@@ -42,7 +42,7 @@ export default function Landing() {
                 background: "linear-gradient(135deg, var(--color-up), #00b377)",
               }}
             >
-              Start free — $10K Rookie <ArrowRight className="w-4 h-4" />
+              Start free — $25K Rookie <ArrowRight className="w-4 h-4" />
             </Link>
             <Link
               href="/pro"
@@ -119,7 +119,7 @@ export default function Landing() {
       <section className="max-w-[1100px] mx-auto px-6 py-24">
         <div className="text-center space-y-3 mb-16">
           <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">The ladder</div>
-          <h2 className="font-serif text-4xl md:text-5xl tracking-tight">Five accounts. Four evals. One mindset.</h2>
+          <h2 className="font-serif text-4xl md:text-5xl tracking-tight">Four accounts. Three evals. One mindset.</h2>
           <p className="text-[var(--color-text-dim)] max-w-2xl mx-auto">
             Each tier teaches you one thing real funded firms care about. Pass to unlock the next.
           </p>

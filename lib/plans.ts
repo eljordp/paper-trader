@@ -24,7 +24,7 @@ export const PLANS: Record<Plan, PlanConfig> = {
     priceUsd: 0,
     blurb: "Forever",
     features: [
-      "$10K Rookie account",
+      "$25K Rookie account",
       "Real US stock market data",
       "Stop loss & take profit",
       "Trade journal",

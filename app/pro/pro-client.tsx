@@ -68,6 +68,16 @@ export default function ProClient({
 
   // Free plan card
   if (plan === "free") {
+    if (!profile) {
+      return (
+        <a
+          href="/login"
+          className="btn-pulse w-full h-11 rounded-md bg-[var(--color-bg)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] text-sm font-medium flex items-center justify-center transition-colors"
+        >
+          Get started free
+        </a>
+      );
+    }
     return (
       <div className="text-xs uppercase tracking-wider text-center text-[var(--color-text-faint)] pt-2">
         {userPlan === "free" && !trialActive ? "Your current plan" : "Free tier"}
