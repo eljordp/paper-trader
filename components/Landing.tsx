@@ -17,13 +17,8 @@ export default function Landing() {
             Pass your funded eval.<br />
             Stop paying{" "}
             <span
-              className="italic"
-              style={{
-                background: "linear-gradient(135deg, var(--color-pro), var(--color-elite))",
-                WebkitBackgroundClip: "text",
-                backgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-              }}
+              className="line-through decoration-[6px] decoration-[var(--color-down)]"
+              style={{ color: "var(--color-pro)" }}
             >
               $99
             </span>{" "}
