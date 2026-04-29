@@ -150,7 +150,7 @@ export default function DashboardClient({
                   border: `1px solid rgba(${tierConfig.colorRgb}, 0.4)`,
                 }}
               >
-                {tierConfig.name} · ${(tierConfig.startingCash / 1000).toFixed(0)}K
+                {tierConfig.name} · ${(Number(account.starting_cash) / 1000).toFixed(0)}K
               </span>
               <Link
                 href="/accounts"

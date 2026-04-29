@@ -111,7 +111,7 @@ export default function Nav() {
             title="Switch account"
           >
             <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
-              {TIERS[account.tier].name}
+              {TIERS[account.tier].name} · ${(Number(account.starting_cash) / 1000).toFixed(0)}K
             </span>
             <span className="font-mono tnum text-sm">{money(equity, { cents: false })}</span>
             <span
