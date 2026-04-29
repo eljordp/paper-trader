@@ -1,7 +1,7 @@
 "use client";
 
 import { usePortfolio } from "@/components/PortfolioProvider";
-import { TIERS, TIER_ORDER, type Tier } from "@/lib/tiers";
+import { TIERS, TIER_ORDER, isTierUnlocked, type Tier } from "@/lib/tiers";
 import { createTierAccount, switchAccount } from "@/lib/actions";
 import { useTransition, useState } from "react";
 import { money } from "@/lib/format";
@@ -57,7 +57,7 @@ export default function AccountsPage() {
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {TIER_ORDER.map((tier) => {
             const cfg = TIERS[tier];
-            const unlocked = TIER_ORDER.indexOf(tier) <= TIER_ORDER.indexOf(highestUnlocked);
+            const unlocked = isTierUnlocked(highestUnlocked, tier);
             const requiresPro = tier !== "rookie";
             const proLocked = requiresPro && !isPro;
             const existingAccount = snapshot.accounts.find((a) => a.tier === tier);

@@ -588,7 +588,8 @@ export async function createTierAccount(tier: Tier) {
     pro_until: string | null;
   } | null;
   const highestUnlocked = p?.highest_tier_unlocked ?? "rookie";
-  if (TIER_ORDER.indexOf(tier) > TIER_ORDER.indexOf(highestUnlocked)) {
+  const { isTierUnlocked } = await import("@/lib/tiers");
+  if (!isTierUnlocked(highestUnlocked, tier)) {
     throw new Error(`${cfg.name} not unlocked yet`);
   }
   // Plan-based gating

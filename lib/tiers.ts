@@ -218,5 +218,10 @@ export function computeEvalStatus(opts: {
 }
 
 export function isTierUnlocked(highestUnlocked: Tier, target: Tier): boolean {
-  return TIER_ORDER.indexOf(target) <= TIER_ORDER.indexOf(highestUnlocked);
+  // Legacy: 'elite' = everything unlocked
+  if (highestUnlocked === "elite") return true;
+  const targetIdx = TIER_ORDER.indexOf(target);
+  const highestIdx = TIER_ORDER.indexOf(highestUnlocked);
+  if (targetIdx === -1 || highestIdx === -1) return false;
+  return targetIdx <= highestIdx;
 }
