@@ -18,7 +18,20 @@ const jet = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jet" });
 export const metadata: Metadata = {
   title: "Paper Trader — Pass your funded eval",
   description:
-    "Practice on real markets with real eval rules. Unlock $50K → $100K → $250K → $500K accounts as you prove yourself.",
+    "Practice on real markets with real eval rules. Unlock $50K → $100K → $150K accounts as you prove yourself.",
+  manifest: "/manifest.json",
+  themeColor: "#0b0c10",
+  appleWebApp: {
+    capable: true,
+    title: "Paper Trader",
+    statusBarStyle: "black-translucent",
+  },
+  viewport: {
+    width: "device-width",
+    initialScale: 1,
+    maximumScale: 1,
+    userScalable: false,
+  },
 };
 
 export default async function RootLayout({

@@ -1,0 +1,17 @@
+{
+  "name": "Paper Trader — Funded Eval Sim",
+  "short_name": "Paper Trader",
+  "description": "Pass your funded eval. Practice on real markets with real eval rules.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0c10",
+  "theme_color": "#0b0c10",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "32x32",
+      "type": "image/x-icon"
+    }
+  ]
+}
