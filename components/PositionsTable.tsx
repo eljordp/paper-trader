@@ -52,7 +52,8 @@ export default function PositionsTable() {
 
   return (
     <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden">
-      <div className="grid grid-cols-[1fr_repeat(5,minmax(0,1fr))] gap-4 px-5 py-3 border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+      {/* Header — desktop columns; mobile shows simplified header */}
+      <div className="hidden sm:grid grid-cols-[1fr_repeat(5,minmax(0,1fr))] gap-4 px-5 py-3 border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
         <div>Ticker</div>
         <div className="text-right">Shares</div>
         <div className="text-right">Avg Cost</div>
@@ -60,20 +61,42 @@ export default function PositionsTable() {
         <div className="text-right">Market Value</div>
         <div className="text-right">P&L</div>
       </div>
+      <div className="sm:hidden grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-3 border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+        <div>Ticker</div>
+        <div className="text-right">Value</div>
+        <div className="text-right">P&L</div>
+      </div>
       {rows.map(({ pos, px, value, pnl, pnlPct }) => (
         <Link
           key={pos.id}
           href={`/trade/${pos.ticker}`}
-          className="grid grid-cols-[1fr_repeat(5,minmax(0,1fr))] gap-4 px-5 py-3.5 border-b border-[var(--color-border)] last:border-b-0 hover:bg-[var(--color-surface-2)] transition-colors"
+          className="block hover:bg-[var(--color-surface-2)] transition-colors border-b border-[var(--color-border)] last:border-b-0"
         >
-          <div className="font-mono font-medium">{pos.ticker}</div>
-          <div className="text-right tnum font-mono text-sm">{fmtShares(Number(pos.shares))}</div>
-          <div className="text-right tnum font-mono text-sm text-[var(--color-text-dim)]">{money(Number(pos.avg_cost))}</div>
-          <div className="text-right tnum font-mono text-sm">{px ? money(px) : "—"}</div>
-          <div className="text-right tnum font-mono text-sm">{money(value)}</div>
-          <div className={cn("text-right tnum font-mono text-sm", pnlColor(pnl))}>
-            <div>{pnl >= 0 ? "+" : ""}{money(pnl)}</div>
-            <div className="text-[11px] opacity-80">{pct(pnlPct)}</div>
+          {/* Desktop row */}
+          <div className="hidden sm:grid grid-cols-[1fr_repeat(5,minmax(0,1fr))] gap-4 px-5 py-3.5">
+            <div className="font-mono font-medium">{pos.ticker}</div>
+            <div className="text-right tnum font-mono text-sm">{fmtShares(Number(pos.shares))}</div>
+            <div className="text-right tnum font-mono text-sm text-[var(--color-text-dim)]">{money(Number(pos.avg_cost))}</div>
+            <div className="text-right tnum font-mono text-sm">{px ? money(px) : "—"}</div>
+            <div className="text-right tnum font-mono text-sm">{money(value)}</div>
+            <div className={cn("text-right tnum font-mono text-sm", pnlColor(pnl))}>
+              <div>{pnl >= 0 ? "+" : ""}{money(pnl)}</div>
+              <div className="text-[11px] opacity-80">{pct(pnlPct)}</div>
+            </div>
+          </div>
+          {/* Mobile row — compact 3 cols */}
+          <div className="sm:hidden grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-3.5 items-center">
+            <div className="min-w-0">
+              <div className="font-mono font-medium">{pos.ticker}</div>
+              <div className="text-[11px] text-[var(--color-text-faint)] tnum font-mono">
+                {fmtShares(Number(pos.shares))} @ {money(Number(pos.avg_cost))}
+              </div>
+            </div>
+            <div className="text-right tnum font-mono text-sm">{money(value)}</div>
+            <div className={cn("text-right tnum font-mono text-sm min-w-[72px]", pnlColor(pnl))}>
+              <div>{pnl >= 0 ? "+" : ""}{money(pnl, { cents: false })}</div>
+              <div className="text-[11px] opacity-80">{pct(pnlPct)}</div>
+            </div>
           </div>
         </Link>
       ))}

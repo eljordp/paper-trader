@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import Nav from "@/components/Nav";
+import MobileNav from "@/components/MobileNav";
 import { PortfolioProvider } from "@/components/PortfolioProvider";
 import BracketWatcher from "@/components/BracketWatcher";
 import { loadPortfolio } from "@/lib/portfolio-data";
@@ -33,7 +34,8 @@ export default async function RootLayout({
       <body className="min-h-full flex flex-col">
         <PortfolioProvider snapshot={snapshot}>
           <Nav />
-          <main className="flex-1">{children}</main>
+          <main className="flex-1 pb-20 md:pb-0">{children}</main>
+          <MobileNav />
           <BracketWatcher />
         </PortfolioProvider>
       </body>

@@ -75,7 +75,8 @@ export default function WatchlistPage() {
           <div className="text-xs text-[var(--color-text-faint)]">Add ones you want to track without owning yet.</div>
         </div>
       ) : (
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden">
+        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-x-auto">
+          <div className="min-w-[680px]">
           <div className="grid grid-cols-[1fr_2fr_1fr_1fr_1fr_60px] gap-4 px-5 py-3 border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
             <div>Ticker</div>
             <div>Name</div>
@@ -129,6 +130,7 @@ export default function WatchlistPage() {
               </div>
             );
           })}
+          </div>
         </div>
       )}
     </div>

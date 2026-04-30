@@ -24,20 +24,22 @@ export default function HistoryPage() {
           <div className="text-xs text-[var(--color-text-faint)]">Search a ticker and place your first trade.</div>
         </div>
       ) : (
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden">
-          <div className="grid grid-cols-[1.2fr_0.6fr_1fr_0.8fr_1fr_1fr_1fr_auto] gap-4 px-5 py-3 border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
-            <div>Date</div>
-            <div>Side</div>
-            <div>Ticker</div>
-            <div className="text-right">Shares</div>
-            <div className="text-right">Price</div>
-            <div className="text-right">Total</div>
-            <div className="text-right">Realized P&L</div>
-            <div className="text-right pr-2">Note</div>
+        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-x-auto">
+          <div className="min-w-[760px]">
+            <div className="grid grid-cols-[1.2fr_0.6fr_1fr_0.8fr_1fr_1fr_1fr_auto] gap-4 px-5 py-3 border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+              <div>Date</div>
+              <div>Side</div>
+              <div>Ticker</div>
+              <div className="text-right">Shares</div>
+              <div className="text-right">Price</div>
+              <div className="text-right">Total</div>
+              <div className="text-right">Realized P&L</div>
+              <div className="text-right pr-2">Note</div>
+            </div>
+            {trades.map((t) => (
+              <TradeRow key={t.id} trade={t} />
+            ))}
           </div>
-          {trades.map((t) => (
-            <TradeRow key={t.id} trade={t} />
-          ))}
         </div>
       )}
     </div>
