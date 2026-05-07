@@ -295,6 +295,156 @@ export async function runEvalCoach(input: EvalCoachInput): Promise<EvalCoachOutp
 }
 
 // =============================================================================
+// TRADE REVIEW — post-mortem on a single closed trade
+// =============================================================================
+
+export type TradeReviewOutput = {
+  score: number; // 1-10 execution quality
+  verdict: "textbook" | "good" | "decent" | "poor" | "bad";
+  headline: string; // 12 words max
+  whatRight: string[]; // 1-3 items
+  whatWrong: string[]; // 1-3 items
+  keyLesson: string; // one sentence
+};
+
+export type TradeReviewInput = {
+  ticker: string;
+  side: "buy" | "sell";
+  shares: number;
+  exitPrice: number; // sell price
+  entryPrice: number; // avg_cost on the position
+  realizedPnl: number;
+  realizedPnlPct: number;
+  triggeredBy: string | null;
+  notes: string | null;
+  strategyName: string | null;
+  strategyEntryRules: string | null;
+  strategyExitRules: string | null;
+  closedAt: string;
+  candles: Array<{ time: number; open: number; high: number; low: number; close: number; volume: number }>;
+  /** Indices into candles array (closest match) */
+  entryCandleIdx: number | null;
+  exitCandleIdx: number | null;
+};
+
+const TRADE_REVIEW_SYSTEM = `You are a trading post-mortem coach. Given a closed trade and the intraday candle data around it, evaluate EXECUTION QUALITY only.
+
+Do NOT judge whether the stock direction was right or wrong — that's hindsight. Judge:
+- Was the entry timing sensible given the price action up to that point?
+- Was the exit timing sensible (took profit too early? too late? cut a loser fast or held it?)
+- Was the trade aligned with the strategy's defined rules (if provided)?
+- Did the trade get triggered by stop/target appropriately, or was it a manual decision under pressure?
+
+Be specific. Reference candle behavior (e.g. "you exited 3 candles before the breakdown"). Be honest. No filler.
+
+Verdicts:
+- "textbook" — entry and exit both followed the plan, R/R hit
+- "good" — minor issue but mostly disciplined
+- "decent" — mixed; got the direction or timing partially right
+- "poor" — clear discipline issues (FOMO entry, panic exit, etc)
+- "bad" — broke rules; pure emotion trade
+
+Output strict JSON:
+{
+  "score": 1-10 integer,
+  "verdict": "textbook"|"good"|"decent"|"poor"|"bad",
+  "headline": "12 words max — the verdict",
+  "whatRight": ["specific positive observation", ...],
+  "whatWrong": ["specific issue", ...],
+  "keyLesson": "One sentence — the takeaway for next time"
+}`;
+
+function summarizeCandles(
+  candles: TradeReviewInput["candles"],
+  entryIdx: number | null,
+  exitIdx: number | null
+): string {
+  if (candles.length === 0) return "  (no candle data available)";
+  const fmt = (c: TradeReviewInput["candles"][0], marker: string) => {
+    const d = new Date(c.time * 1000);
+    const t = `${d.getUTCHours().toString().padStart(2, "0")}:${d.getUTCMinutes().toString().padStart(2, "0")}`;
+    const range = c.high - c.low;
+    return `  ${marker} ${d.toISOString().slice(5, 10)} ${t} O:${c.open.toFixed(2)} H:${c.high.toFixed(2)} L:${c.low.toFixed(2)} C:${c.close.toFixed(2)} range:${range.toFixed(2)} vol:${(c.volume / 1000).toFixed(0)}k`;
+  };
+
+  // Pull a window: 10 before entry → entry → between → exit → 5 after
+  const lines: string[] = [];
+  if (entryIdx != null) {
+    const start = Math.max(0, entryIdx - 10);
+    for (let i = start; i < entryIdx; i++) lines.push(fmt(candles[i], "  "));
+    lines.push(fmt(candles[entryIdx], "← ENTRY"));
+  }
+  if (entryIdx != null && exitIdx != null && exitIdx > entryIdx) {
+    const between = exitIdx - entryIdx - 1;
+    if (between > 8) {
+      // Show first 3 + last 3 with gap
+      for (let i = entryIdx + 1; i < entryIdx + 4; i++) lines.push(fmt(candles[i], "  "));
+      lines.push(`  … ${between - 6} candles omitted …`);
+      for (let i = exitIdx - 3; i < exitIdx; i++) lines.push(fmt(candles[i], "  "));
+    } else {
+      for (let i = entryIdx + 1; i < exitIdx; i++) lines.push(fmt(candles[i], "  "));
+    }
+  }
+  if (exitIdx != null) {
+    lines.push(fmt(candles[exitIdx], "← EXIT "));
+    const end = Math.min(candles.length, exitIdx + 6);
+    for (let i = exitIdx + 1; i < end; i++) lines.push(fmt(candles[i], "  "));
+  }
+  if (entryIdx == null && exitIdx == null) {
+    // Just dump last 20
+    const start = Math.max(0, candles.length - 20);
+    for (let i = start; i < candles.length; i++) lines.push(fmt(candles[i], "  "));
+  }
+  return lines.join("\n");
+}
+
+function buildTradeReviewPrompt(input: TradeReviewInput): string {
+  return `CLOSED TRADE:
+  ${input.ticker} — ${input.shares} shares
+  Entry (avg cost): $${input.entryPrice.toFixed(2)}
+  Exit: $${input.exitPrice.toFixed(2)}
+  Realized P&L: ${input.realizedPnl >= 0 ? "+" : ""}$${input.realizedPnl.toFixed(2)} (${input.realizedPnlPct >= 0 ? "+" : ""}${input.realizedPnlPct.toFixed(2)}%)
+  Closed at: ${input.closedAt}
+  Triggered by: ${input.triggeredBy ?? "manual"}
+${input.notes ? `  User note: "${input.notes}"\n` : ""}${input.strategyName ? `\nSTRATEGY: ${input.strategyName}\n  Entry rules: ${input.strategyEntryRules ?? "(not set)"}\n  Exit rules: ${input.strategyExitRules ?? "(not set)"}\n` : ""}
+
+INTRADAY CANDLES (around the trade):
+${summarizeCandles(input.candles, input.entryCandleIdx, input.exitCandleIdx)}
+
+Review the execution quality. Return JSON only.`;
+}
+
+export async function runTradeReview(
+  input: TradeReviewInput
+): Promise<TradeReviewOutput | null> {
+  const oai = client();
+  if (!oai) return null;
+
+  try {
+    const completion = await oai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: TRADE_REVIEW_SYSTEM },
+        { role: "user", content: buildTradeReviewPrompt(input) },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.4,
+      max_tokens: 500,
+    });
+    const raw = completion.choices[0]?.message?.content;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as TradeReviewOutput;
+    parsed.score = Math.max(1, Math.min(10, Math.round(parsed.score)));
+    parsed.whatRight = (parsed.whatRight ?? []).slice(0, 3);
+    parsed.whatWrong = (parsed.whatWrong ?? []).slice(0, 3);
+    return parsed;
+  } catch (e) {
+    console.error("[brain] runTradeReview error:", e);
+    return null;
+  }
+}
+
+// =============================================================================
 // STRATEGY COACH — analyzes a single strategy's performance and gives feedback
 // =============================================================================
 

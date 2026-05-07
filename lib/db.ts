@@ -49,6 +49,15 @@ export type DBTrade = {
   notes: string | null;
   tags: string[] | null;
   triggered_by: "manual" | "stop" | "target" | "eval_failed" | null;
+  review: {
+    score: number;
+    verdict: "textbook" | "good" | "decent" | "poor" | "bad";
+    headline: string;
+    whatRight: string[];
+    whatWrong: string[];
+    keyLesson: string;
+  } | null;
+  review_at: string | null;
   created_at: string;
 };
 
