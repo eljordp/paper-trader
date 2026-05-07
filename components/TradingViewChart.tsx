@@ -82,7 +82,14 @@ export default function TradingViewChart({
 }
 
 function mapToTVSymbol(ticker: string): string {
-  const t = ticker.toUpperCase();
+  // Defensive: decode in case URL-encoded form leaked through (e.g. NQ%3DF → NQ=F)
+  let t = ticker;
+  try {
+    if (t.includes("%")) t = decodeURIComponent(t);
+  } catch {
+    /* keep raw */
+  }
+  t = t.toUpperCase();
 
   const cmeMini: Record<string, string> = {
     "ES=F": "CME_MINI:ES1!",
