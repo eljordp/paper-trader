@@ -28,32 +28,79 @@ export type QuoteData = {
 };
 
 export async function getQuote(symbol: string): Promise<QuoteData> {
-  const q = await yahooFinance.quote(symbol);
-  if (!q) throw new Error(`No quote for ${symbol}`);
-  return {
-    symbol: q.symbol,
-    shortName: q.shortName ?? q.symbol,
-    longName: q.longName ?? q.shortName ?? q.symbol,
-    price: q.regularMarketPrice ?? 0,
-    change: q.regularMarketChange ?? 0,
-    changePct: q.regularMarketChangePercent ?? 0,
-    prevClose: q.regularMarketPreviousClose ?? 0,
-    open: q.regularMarketOpen ?? 0,
-    dayHigh: q.regularMarketDayHigh ?? 0,
-    dayLow: q.regularMarketDayLow ?? 0,
-    yearHigh: q.fiftyTwoWeekHigh ?? null,
-    yearLow: q.fiftyTwoWeekLow ?? null,
-    marketCap: q.marketCap ?? null,
-    pe: q.trailingPE ?? null,
-    eps: q.epsTrailingTwelveMonths ?? null,
-    volume: q.regularMarketVolume ?? null,
-    avgVolume: q.averageDailyVolume3Month ?? null,
-    dividendYield: q.trailingAnnualDividendYield ? q.trailingAnnualDividendYield * 100 : null,
-    beta: (q as { beta?: number }).beta ?? null,
-    exchange: q.fullExchangeName ?? q.exchange ?? "",
-    currency: q.currency ?? "USD",
-    marketState: q.marketState ?? "REGULAR",
-  };
+  // Primary: quote() endpoint
+  try {
+    const q = await yahooFinance.quote(symbol);
+    if (q && q.regularMarketPrice != null) {
+      return {
+        symbol: q.symbol,
+        shortName: q.shortName ?? q.symbol,
+        longName: q.longName ?? q.shortName ?? q.symbol,
+        price: q.regularMarketPrice ?? 0,
+        change: q.regularMarketChange ?? 0,
+        changePct: q.regularMarketChangePercent ?? 0,
+        prevClose: q.regularMarketPreviousClose ?? 0,
+        open: q.regularMarketOpen ?? 0,
+        dayHigh: q.regularMarketDayHigh ?? 0,
+        dayLow: q.regularMarketDayLow ?? 0,
+        yearHigh: q.fiftyTwoWeekHigh ?? null,
+        yearLow: q.fiftyTwoWeekLow ?? null,
+        marketCap: q.marketCap ?? null,
+        pe: q.trailingPE ?? null,
+        eps: q.epsTrailingTwelveMonths ?? null,
+        volume: q.regularMarketVolume ?? null,
+        avgVolume: q.averageDailyVolume3Month ?? null,
+        dividendYield: q.trailingAnnualDividendYield ? q.trailingAnnualDividendYield * 100 : null,
+        beta: (q as { beta?: number }).beta ?? null,
+        exchange: q.fullExchangeName ?? q.exchange ?? "",
+        currency: q.currency ?? "USD",
+        marketState: q.marketState ?? "REGULAR",
+      };
+    }
+  } catch (e) {
+    console.warn(`[yahoo] quote() failed for ${symbol}, trying chart fallback:`, e instanceof Error ? e.message : e);
+  }
+
+  // Fallback: pull from chart endpoint (works for futures Yahoo doesn't quote properly)
+  try {
+    const period1 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const result = await yahooFinance.chart(symbol, { period1, interval: "1h" });
+    const meta = (result as { meta?: Record<string, unknown> })?.meta;
+    if (meta && typeof meta.regularMarketPrice === "number") {
+      const price = meta.regularMarketPrice as number;
+      const prevClose = (meta.chartPreviousClose ?? meta.previousClose ?? price) as number;
+      const change = price - prevClose;
+      const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+      return {
+        symbol: (meta.symbol as string) ?? symbol,
+        shortName: (meta.shortName as string) ?? symbol,
+        longName: (meta.longName as string) ?? (meta.shortName as string) ?? symbol,
+        price,
+        change,
+        changePct,
+        prevClose,
+        open: (meta.chartPreviousClose as number) ?? price,
+        dayHigh: (meta.regularMarketDayHigh as number) ?? price,
+        dayLow: (meta.regularMarketDayLow as number) ?? price,
+        yearHigh: (meta.fiftyTwoWeekHigh as number) ?? null,
+        yearLow: (meta.fiftyTwoWeekLow as number) ?? null,
+        marketCap: null,
+        pe: null,
+        eps: null,
+        volume: (meta.regularMarketVolume as number) ?? null,
+        avgVolume: null,
+        dividendYield: null,
+        beta: null,
+        exchange: (meta.fullExchangeName as string) ?? (meta.exchangeName as string) ?? "",
+        currency: (meta.currency as string) ?? "USD",
+        marketState: "REGULAR",
+      };
+    }
+  } catch (e) {
+    console.warn(`[yahoo] chart() fallback failed for ${symbol}:`, e instanceof Error ? e.message : e);
+  }
+
+  throw new Error(`No quote for ${symbol}`);
 }
 
 export async function getQuotes(symbols: string[]): Promise<Record<string, QuoteData>> {
