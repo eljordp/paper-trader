@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Briefcase, Star, Newspaper, Layers } from "lucide-react";
+import { Home, Briefcase, Star, Trophy, Layers } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { usePortfolio } from "./PortfolioProvider";
 
@@ -10,7 +10,7 @@ const tabs = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/portfolio", label: "Portfolio", Icon: Briefcase },
   { href: "/watchlist", label: "Watch", Icon: Star },
-  { href: "/news", label: "News", Icon: Newspaper },
+  { href: "/leaderboard", label: "Ranks", Icon: Trophy },
   { href: "/accounts", label: "Tiers", Icon: Layers },
 ];
 

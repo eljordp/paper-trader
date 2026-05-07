@@ -50,7 +50,7 @@ export default function LoginClient() {
           </h1>
           <p className="text-sm text-[var(--color-text-dim)]">
             {mode === "signup"
-              ? "Free $10K Rookie account. No credit card."
+              ? "Free $25K Rookie account. No credit card."
               : "Sign in to your paper trader account."}
           </p>
         </div>

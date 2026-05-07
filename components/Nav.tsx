@@ -11,13 +11,14 @@ import TickerSearch from "./TickerSearch";
 import { signOut } from "@/lib/actions";
 import { LogOut, Sparkles, Clock, Shield } from "lucide-react";
 import { effectivePlan, isTrialActive, trialDaysRemaining } from "@/lib/plans";
-import { highestRole, ROLES } from "@/lib/roles";
+import { highestRole, isAdmin, ROLES } from "@/lib/roles";
 
 const links = [
   { href: "/", label: "Dashboard" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/history", label: "History" },
   { href: "/watchlist", label: "Watchlist" },
+  { href: "/leaderboard", label: "Leaderboard" },
   { href: "/news", label: "News" },
   { href: "/learn", label: "Learn" },
 ];
@@ -122,6 +123,21 @@ export default function Nav() {
             >
               {change >= 0 ? "+" : ""}{changePct.toFixed(2)}%
             </span>
+          </Link>
+        )}
+
+        {isAuth && isAdmin(snapshot?.profile ?? null) && (
+          <Link
+            href="/admin"
+            className="hidden md:inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-md transition-opacity hover:opacity-80"
+            style={{
+              background: "rgba(245, 158, 11, 0.1)",
+              border: "1px solid rgba(245, 158, 11, 0.4)",
+              color: "var(--color-pro)",
+            }}
+            title="Admin console"
+          >
+            Admin
           </Link>
         )}
 
