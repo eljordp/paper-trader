@@ -2,14 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Briefcase, Star, Trophy, Layers } from "lucide-react";
+import { Home, Briefcase, Search, Trophy, Layers } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { usePortfolio } from "./PortfolioProvider";
+import { useState } from "react";
+import MobileSearchOverlay from "./MobileSearchOverlay";
 
 const tabs = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/portfolio", label: "Portfolio", Icon: Briefcase },
-  { href: "/watchlist", label: "Watch", Icon: Star },
+  { href: "search", label: "Search", Icon: Search }, // special: opens overlay
   { href: "/leaderboard", label: "Ranks", Icon: Trophy },
   { href: "/accounts", label: "Tiers", Icon: Layers },
 ];

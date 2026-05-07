@@ -41,7 +41,7 @@ export default function TickerSearch() {
     setQ("");
     setOpen(false);
     setResults([]);
-    router.push(`/trade/${sym.toUpperCase()}`);
+    router.push(`/trade/${encodeURIComponent(sym.toUpperCase())}`);
   };
 
   return (
@@ -82,7 +82,12 @@ export default function TickerSearch() {
               key={r.symbol}
               type="button"
               onMouseEnter={() => setActive(i)}
-              onMouseDown={(e) => {
+              onPointerDown={(e) => {
+                e.preventDefault();
+                go(r.symbol);
+              }}
+              onClick={(e) => {
+                // Fallback for browsers that don't fire pointer events first
                 e.preventDefault();
                 go(r.symbol);
               }}
