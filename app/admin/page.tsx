@@ -1,4 +1,4 @@
-import { requireOwnerOrAdmin, adminClient } from "@/lib/admin";
+import { requireOwner, adminClient } from "@/lib/admin";
 import { money, pct } from "@/lib/format";
 import { ROLES, type Role } from "@/lib/roles";
 import { TIERS, type Tier } from "@/lib/tiers";
@@ -9,7 +9,7 @@ import Link from "next/link";
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
-  await requireOwnerOrAdmin();
+  await requireOwner();
   const sb = adminClient();
 
   const now = new Date();

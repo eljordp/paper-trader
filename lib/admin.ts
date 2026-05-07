@@ -16,8 +16,31 @@ export function adminClient() {
 }
 
 /**
- * Server-side gate: redirects to / if the current user isn't owner/admin.
- * Returns { user, profile, sb } so the caller doesn't need to re-fetch.
+ * Owner-only server gate. Redirects to / if user isn't owner.
+ * Use for the full owner console (revenue, every user's email, etc).
+ */
+export async function requireOwner() {
+  const sb = await createClient();
+  const {
+    data: { user },
+  } = await sb.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: profile } = await sb
+    .from("profiles")
+    .select("*")
+    .eq("id", user.id)
+    .single();
+  if (!profile) redirect("/");
+  const p = profile as { roles: string[] | null };
+  if (!hasRole(p, "owner")) {
+    redirect("/");
+  }
+  return { user, profile, sb };
+}
+
+/**
+ * Owner OR admin (mod) gate. Use for moderation tools.
  */
 export async function requireOwnerOrAdmin() {
   const sb = await createClient();

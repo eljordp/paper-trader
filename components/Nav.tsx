@@ -11,7 +11,7 @@ import TickerSearch from "./TickerSearch";
 import { signOut } from "@/lib/actions";
 import { LogOut, Sparkles, Clock, Shield } from "lucide-react";
 import { effectivePlan, isTrialActive, trialDaysRemaining } from "@/lib/plans";
-import { highestRole, isAdmin, ROLES } from "@/lib/roles";
+import { highestRole, hasRole, ROLES } from "@/lib/roles";
 import Avatar from "./Avatar";
 
 const links = [
@@ -127,18 +127,18 @@ export default function Nav() {
           </Link>
         )}
 
-        {isAuth && isAdmin(snapshot?.profile ?? null) && (
+        {isAuth && hasRole(snapshot?.profile ?? null, "owner") && (
           <Link
             href="/admin"
             className="hidden md:inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-md transition-opacity hover:opacity-80"
             style={{
-              background: "rgba(245, 158, 11, 0.1)",
-              border: "1px solid rgba(245, 158, 11, 0.4)",
-              color: "var(--color-pro)",
+              background: "rgba(236, 72, 153, 0.1)",
+              border: "1px solid rgba(236, 72, 153, 0.4)",
+              color: "var(--color-elite)",
             }}
-            title="Admin console"
+            title="Owner console"
           >
-            Admin
+            Owner
           </Link>
         )}
 
