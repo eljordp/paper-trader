@@ -63,7 +63,8 @@ body::before {
   z-index: 0;
 }
 
-main, header { position: relative; z-index: 1; }
+main { position: relative; }
+header { position: relative; }
 
 .tnum {
   font-variant-numeric: tabular-nums;
