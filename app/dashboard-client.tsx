@@ -14,6 +14,7 @@ import { TermLabel } from "@/components/Tooltip";
 import { ArrowRight, Trophy, AlertTriangle, Coffee, Flame, CheckCircle2, XCircle, Circle, Sparkles } from "lucide-react";
 import { TIERS, type Tier, computeEvalStatus } from "@/lib/tiers";
 import { resetActiveAccount } from "@/lib/actions";
+import { getFuturesSpec } from "@/lib/instruments";
 import { CHALLENGES } from "@/lib/challenges";
 import { celebrateChallenge, celebrateEvalPass, celebrateTierUnlock } from "@/lib/celebrate";
 
@@ -90,6 +91,12 @@ export default function DashboardClient({
   const cash = Number(account.cash);
   const positionsValue = snapshot.positions.reduce((acc, p) => {
     const px = prices[p.ticker] ?? Number(p.avg_cost);
+    if (p.instrument_type === "futures") {
+      const spec = getFuturesSpec(p.ticker);
+      const pv = spec?.pointValue ?? 1;
+      const move = p.side === "long" ? px - Number(p.avg_cost) : Number(p.avg_cost) - px;
+      return acc + Number(p.margin_held ?? 0) + move * pv * Number(p.shares);
+    }
     const v = Number(p.shares) * px;
     return p.side === "short" ? acc - v : acc + v;
   }, 0);
@@ -100,7 +107,12 @@ export default function DashboardClient({
   const unrealized = snapshot.positions.reduce((a, p) => {
     const px = prices[p.ticker];
     if (!Number.isFinite(px)) return a;
-    // Long: (price - avg_cost) * shares; Short: (avg_cost - price) * shares
+    if (p.instrument_type === "futures") {
+      const spec = getFuturesSpec(p.ticker);
+      const pv = spec?.pointValue ?? 1;
+      const move = p.side === "long" ? px - Number(p.avg_cost) : Number(p.avg_cost) - px;
+      return a + move * pv * Number(p.shares);
+    }
     const sign = p.side === "short" ? -1 : 1;
     return a + sign * Number(p.shares) * (px - Number(p.avg_cost));
   }, 0);

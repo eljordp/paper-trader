@@ -6,6 +6,7 @@ import { TIERS, type Tier, computeEvalStatus, nextTier } from "@/lib/tiers";
 import { getQuote, getQuotes } from "@/lib/yahoo";
 import { redirect } from "next/navigation";
 import { todayUtcDate, type ChallengeType } from "@/lib/challenges";
+import { getFuturesSpec, isFuturesSymbol } from "@/lib/instruments";
 
 const TIER_ORDER: Tier[] = ["rookie", "phase1", "phase2", "pro", "elite"];
 
@@ -58,6 +59,48 @@ async function markChallenge(
   await sb.from("daily_challenges").update(update).eq("id", c.id);
 }
 
+/**
+ * Compute the total equity contribution from open positions.
+ * - Stock long: shares × current price
+ * - Stock short: -(shares × current price)  (cash already has proceeds)
+ * - Futures long: margin_held + (current - entry) × pointValue × contracts
+ * - Futures short: margin_held + (entry - current) × pointValue × contracts
+ */
+async function computePositionsValue(
+  sb: Awaited<ReturnType<typeof createClient>>,
+  accountId: string
+): Promise<number> {
+  const { data: positions } = await sb
+    .from("positions")
+    .select("ticker, shares, avg_cost, side, instrument_type, margin_held")
+    .eq("account_id", accountId);
+  const list = (positions ?? []) as Array<{
+    ticker: string;
+    shares: number;
+    avg_cost: number;
+    side: "long" | "short";
+    instrument_type: "stock" | "futures";
+    margin_held: number | null;
+  }>;
+  if (list.length === 0) return 0;
+  const tickers = Array.from(new Set(list.map((p) => p.ticker)));
+  const quotes = await getQuotes(tickers);
+  return list.reduce((acc, p) => {
+    const px = quotes[p.ticker]?.price ?? Number(p.avg_cost);
+    if (p.instrument_type === "futures") {
+      const fSpec = getFuturesSpec(p.ticker);
+      const pv = fSpec?.pointValue ?? 1;
+      const move = p.side === "long" ? px - Number(p.avg_cost) : Number(p.avg_cost) - px;
+      const unrealized = move * pv * Number(p.shares);
+      const margin = Number(p.margin_held ?? 0);
+      return acc + margin + unrealized;
+    }
+    // Stock
+    const v = Number(p.shares) * px;
+    return p.side === "short" ? acc - v : acc + v;
+  }, 0);
+}
+
 async function snapshotEquity(
   sb: Awaited<ReturnType<typeof createClient>>,
   accountId: string
@@ -68,21 +111,7 @@ async function snapshotEquity(
     .eq("id", accountId)
     .single();
   if (!account) return;
-  const { data: positions } = await sb
-    .from("positions")
-    .select("ticker, shares, avg_cost, side")
-    .eq("account_id", accountId);
-  const tickers = (positions ?? []).map((p) => (p as { ticker: string }).ticker);
-  let positionsValue = 0;
-  if (tickers.length > 0) {
-    const quotes = await getQuotes(tickers);
-    positionsValue = (positions ?? []).reduce((acc, p) => {
-      const r = p as { ticker: string; shares: number; avg_cost: number; side: "long" | "short" };
-      const px = quotes[r.ticker]?.price ?? Number(r.avg_cost);
-      const v = Number(r.shares) * px;
-      return r.side === "short" ? acc - v : acc + v;
-    }, 0);
-  }
+  const positionsValue = await computePositionsValue(sb, accountId);
   const cash = Number((account as { cash: number }).cash);
   const equity = cash + positionsValue;
   await sb.from("equity_snapshots").insert({
@@ -138,16 +167,32 @@ async function applySell(opts: {
     throw new Error(`Only have ${position.shares} shares`);
   }
 
-  const proceeds = qty * price;
-  const realizedPnl = qty * (price - Number(position.avg_cost));
+  const isFutures = isFuturesSymbol(ticker);
+  const fSpec = getFuturesSpec(ticker);
   const remainShares = Number(position.shares) - qty;
+
+  // Realized P&L: futures = move × pointValue × qty; stocks = move × qty
+  const realizedPnl =
+    isFutures && fSpec
+      ? (price - Number(position.avg_cost)) * fSpec.pointValue * qty
+      : qty * (price - Number(position.avg_cost));
+
+  // Cash returned: futures returns held margin + P&L; stocks returns proceeds (qty × price)
+  const positionData = pos as { margin_held: number | null };
+  const marginHeld = Number(positionData.margin_held ?? 0);
+  const marginReleased = isFutures && fSpec ? fSpec.dayTradeMargin * qty : 0;
+  const proceeds = isFutures && fSpec ? marginReleased + realizedPnl : qty * price;
 
   if (remainShares < 1e-6) {
     await sb.from("positions").delete().eq("account_id", account.id).eq("ticker", ticker);
   } else {
+    const update: Record<string, unknown> = { shares: remainShares };
+    if (isFutures && fSpec) {
+      update.margin_held = Math.max(0, marginHeld - marginReleased);
+    }
     await sb
       .from("positions")
-      .update({ shares: remainShares })
+      .update(update)
       .eq("account_id", account.id)
       .eq("ticker", ticker);
   }
@@ -158,12 +203,15 @@ async function applySell(opts: {
     side: "sell",
     shares: qty,
     price,
-    total: proceeds,
+    total: isFutures ? qty * price * (fSpec?.pointValue ?? 1) : qty * price,
     realized_pnl: realizedPnl,
     triggered_by: triggeredBy,
     notes: opts.notes ?? null,
     strategy_id: opts.strategyId ?? null,
     is_training: opts.isTraining ?? false,
+    instrument_type: isFutures ? "futures" : "stock",
+    contracts: isFutures ? qty : null,
+    point_value: isFutures && fSpec ? fSpec.pointValue : null,
   });
 
   const today = new Date().toISOString().slice(0, 10);
@@ -171,20 +219,7 @@ async function applySell(opts: {
   const newCash = Number(account.cash) + proceeds;
 
   // Compute new equity for HWM + eval check
-  const { data: remainingPositions } = await sb
-    .from("positions")
-    .select("ticker, shares, avg_cost")
-    .eq("account_id", account.id);
-  const remTickers = (remainingPositions ?? []).map((r) => (r as { ticker: string }).ticker);
-  let positionsValue = 0;
-  if (remTickers.length > 0) {
-    const quotes = await getQuotes(remTickers);
-    positionsValue = (remainingPositions ?? []).reduce((acc, p) => {
-      const r = p as { ticker: string; shares: number; avg_cost: number };
-      const px = quotes[r.ticker]?.price ?? Number(r.avg_cost);
-      return acc + Number(r.shares) * px;
-    }, 0);
-  }
+  const positionsValue = await computePositionsValue(sb, account.id);
   const newEquity = newCash + positionsValue;
   const newHWM = Math.max(Number(account.high_water_mark), newEquity);
 
@@ -308,10 +343,20 @@ export async function buy(formData: FormData) {
     return { error: `Take profit must be above the current price ($${quote.price.toFixed(2)})` };
   }
 
-  const total = qty * quote.price;
-  if (total > Number(account.cash) + 1e-6) {
-    return { error: `Need $${total.toFixed(2)} but you have $${Number(account.cash).toFixed(2)}` };
+  const isFutures = isFuturesSymbol(ticker);
+  const fSpec = getFuturesSpec(ticker);
+  const notional = qty * quote.price * (isFutures && fSpec ? fSpec.pointValue : 1);
+  // Futures use day-trade margin per contract; stocks use full notional
+  const cashRequired = isFutures && fSpec ? fSpec.dayTradeMargin * qty : qty * quote.price;
+  if (cashRequired > Number(account.cash) + 1e-6) {
+    return {
+      error: isFutures
+        ? `Need $${cashRequired.toFixed(2)} margin but you have $${Number(account.cash).toFixed(2)}`
+        : `Need $${cashRequired.toFixed(2)} but you have $${Number(account.cash).toFixed(2)}`,
+    };
   }
+  // Keep `total` as the notional value for trade record continuity
+  const total = isFutures && fSpec ? notional : qty * quote.price;
 
   // Daily loss check
   if (account.daily_loss_limit_pct != null) {
@@ -363,6 +408,8 @@ export async function buy(formData: FormData) {
       stop_loss: stopLoss,
       take_profit: takeProfit,
       side: "long",
+      instrument_type: isFutures ? "futures" : "stock",
+      margin_held: isFutures && fSpec ? fSpec.dayTradeMargin * qty : 0,
     });
   }
 
@@ -377,6 +424,9 @@ export async function buy(formData: FormData) {
     triggered_by: "manual",
     strategy_id: strategyId,
     is_training: isTraining,
+    instrument_type: isFutures ? "futures" : "stock",
+    contracts: isFutures ? qty : null,
+    point_value: isFutures && fSpec ? fSpec.pointValue : null,
   });
 
   const today = new Date().toISOString().slice(0, 10);
@@ -384,7 +434,7 @@ export async function buy(formData: FormData) {
   await sb
     .from("accounts")
     .update({
-      cash: Number(account.cash) - total,
+      cash: Number(account.cash) - cashRequired,
       last_trading_date: today,
       trading_days_count: isNewDay
         ? Number(account.trading_days_count) + 1
@@ -403,7 +453,9 @@ export async function buy(formData: FormData) {
   }
 
   revalidatePath("/", "layout");
-  return { success: `Bought ${qty} ${ticker} @ $${quote.price.toFixed(2)}` };
+  const word = isFutures ? "Bought" : "Bought";
+  const unit = isFutures ? `contract${qty !== 1 ? "s" : ""}` : "shares";
+  return { success: `${word} ${qty} ${ticker} ${unit} @ $${quote.price.toFixed(2)}` };
 }
 
 export async function sell(formData: FormData) {
@@ -513,11 +565,19 @@ export async function shortOpen(formData: FormData) {
     return { error: `Take profit must be below the current price ($${quote.price.toFixed(2)}) on a short` };
   }
 
-  const proceeds = qty * quote.price;
-  // Margin requirement (simplified): need 50% buying power
-  const marginRequired = proceeds * 0.5;
+  const isFutures = isFuturesSymbol(ticker);
+  const fSpec = getFuturesSpec(ticker);
+  const proceeds = isFutures && fSpec ? 0 : qty * quote.price;
+  // Margin requirement: futures use day-trade margin per contract; stocks use 50%
+  const marginRequired = isFutures && fSpec
+    ? fSpec.dayTradeMargin * qty
+    : (qty * quote.price) * 0.5;
   if (marginRequired > Number(account.cash) + 1e-6) {
-    return { error: `Need $${marginRequired.toFixed(2)} buying power to short (50% of $${proceeds.toFixed(2)})` };
+    return {
+      error: isFutures
+        ? `Need $${marginRequired.toFixed(2)} margin to short ${qty} contract${qty !== 1 ? "s" : ""}`
+        : `Need $${marginRequired.toFixed(2)} buying power to short`,
+    };
   }
 
   const { data: existing } = await sb
@@ -552,6 +612,8 @@ export async function shortOpen(formData: FormData) {
       stop_loss: stopLoss,
       take_profit: takeProfit,
       side: "short",
+      instrument_type: isFutures ? "futures" : "stock",
+      margin_held: isFutures && fSpec ? fSpec.dayTradeMargin * qty : 0,
     });
   }
 
@@ -561,20 +623,26 @@ export async function shortOpen(formData: FormData) {
     side: "short",
     shares: qty,
     price: quote.price,
-    total: proceeds,
+    total: isFutures && fSpec ? qty * quote.price * fSpec.pointValue : proceeds,
     notes,
     triggered_by: "manual",
     strategy_id: strategyId,
     is_training: isTraining,
+    instrument_type: isFutures ? "futures" : "stock",
+    contracts: isFutures ? qty : null,
+    point_value: isFutures && fSpec ? fSpec.pointValue : null,
   });
 
-  // Cash gets the proceeds; margin is implicitly held against the short
+  // Cash flow:
+  // - Stock short: receive proceeds (qty * price) into cash
+  // - Futures short: deduct margin from cash; no proceeds (P&L settled on cover)
   const today = new Date().toISOString().slice(0, 10);
   const isNewDay = account.last_trading_date !== today;
+  const cashDelta = isFutures && fSpec ? -marginRequired : proceeds;
   await sb
     .from("accounts")
     .update({
-      cash: Number(account.cash) + proceeds,
+      cash: Number(account.cash) + cashDelta,
       last_trading_date: today,
       trading_days_count: isNewDay
         ? Number(account.trading_days_count) + 1
@@ -588,7 +656,8 @@ export async function shortOpen(formData: FormData) {
   if (takeProfit != null) await markChallenge(sb, user.id, "set_target", "completed");
 
   revalidatePath("/", "layout");
-  return { success: `Shorted ${qty} ${ticker} @ $${quote.price.toFixed(2)}` };
+  const unit = isFutures ? `contract${qty !== 1 ? "s" : ""}` : "shares";
+  return { success: `Shorted ${qty} ${ticker} ${unit} @ $${quote.price.toFixed(2)}` };
 }
 
 async function applyCover(opts: {
@@ -612,7 +681,13 @@ async function applyCover(opts: {
     .eq("ticker", ticker)
     .maybeSingle();
   if (!pos) throw new Error(`No short position in ${ticker}`);
-  const position = pos as { shares: number; avg_cost: number; side: "long" | "short" };
+  const position = pos as {
+    shares: number;
+    avg_cost: number;
+    side: "long" | "short";
+    instrument_type?: "stock" | "futures";
+    margin_held?: number | null;
+  };
   if (position.side !== "short") {
     throw new Error(`${ticker} is a long position — use Sell, not Cover`);
   }
@@ -620,17 +695,38 @@ async function applyCover(opts: {
     throw new Error(`Only short ${position.shares} shares`);
   }
 
-  const cost = qty * price;
-  // Short P&L: profit when price falls (entry - cover)
-  const realizedPnl = qty * (Number(position.avg_cost) - price);
+  const isFutures = isFuturesSymbol(ticker) || position.instrument_type === "futures";
+  const fSpec = getFuturesSpec(ticker);
   const remainShares = Number(position.shares) - qty;
+
+  // Short P&L: profit when price falls
+  // Stock: qty × (entry − cover)
+  // Futures: (entry − cover) × pointValue × contracts
+  const realizedPnl =
+    isFutures && fSpec
+      ? (Number(position.avg_cost) - price) * fSpec.pointValue * qty
+      : qty * (Number(position.avg_cost) - price);
+
+  // Cash flow on cover:
+  // Stock short cover: pay cost (qty × price) to buy back the shorted shares.
+  //                    cashDelta = -(qty × price). Realized P&L is implicit in the delta vs prior proceeds.
+  // Futures short cover: receive back margin + realized P&L.
+  //                      cashDelta = margin_released + realized_pnl
+  const marginReleased = isFutures && fSpec ? fSpec.dayTradeMargin * qty : 0;
+  const cost = qty * price;
+  const cashDelta =
+    isFutures && fSpec ? marginReleased + realizedPnl : -cost;
 
   if (remainShares < 1e-6) {
     await sb.from("positions").delete().eq("account_id", account.id).eq("ticker", ticker);
   } else {
+    const update: Record<string, unknown> = { shares: remainShares };
+    if (isFutures && fSpec) {
+      update.margin_held = Math.max(0, Number(position.margin_held ?? 0) - marginReleased);
+    }
     await sb
       .from("positions")
-      .update({ shares: remainShares })
+      .update(update)
       .eq("account_id", account.id)
       .eq("ticker", ticker);
   }
@@ -641,42 +737,36 @@ async function applyCover(opts: {
     side: "cover",
     shares: qty,
     price,
-    total: cost,
+    total: isFutures && fSpec ? qty * price * fSpec.pointValue : cost,
     realized_pnl: realizedPnl,
     triggered_by: triggeredBy,
     notes: opts.notes ?? null,
     strategy_id: opts.strategyId ?? null,
     is_training: opts.isTraining ?? false,
+    instrument_type: isFutures ? "futures" : "stock",
+    contracts: isFutures ? qty : null,
+    point_value: isFutures && fSpec ? fSpec.pointValue : null,
   });
 
   const today = new Date().toISOString().slice(0, 10);
   const isNewDay = account.last_trading_date !== today;
-  const newCash = Number(account.cash) - cost;
+  const newCash = Number(account.cash) + cashDelta;
 
-  // Compute new equity (long contributes +shares*price, short contributes -shares*price)
+  const positionsValue = await computePositionsValue(sb, account.id);
+  // For shorts the cash already has proceeds; positionsValue subtracts current short value.
+  // For accounting balance, we need to add back the original short proceeds (= shares * avg_cost)
+  // to avoid double-counting.
   const { data: remainingPositions } = await sb
     .from("positions")
-    .select("ticker, shares, avg_cost, side")
+    .select("shares, avg_cost, side, instrument_type")
     .eq("account_id", account.id);
-  const remTickers = (remainingPositions ?? []).map((r) => (r as { ticker: string }).ticker);
-  let positionsValue = 0;
-  if (remTickers.length > 0) {
-    const quotes = await getQuotes(remTickers);
-    positionsValue = (remainingPositions ?? []).reduce((acc, p) => {
-      const r = p as { ticker: string; shares: number; avg_cost: number; side: "long" | "short" };
-      const px = quotes[r.ticker]?.price ?? Number(r.avg_cost);
-      const value = Number(r.shares) * px;
-      return r.side === "short" ? acc - value : acc + value;
-    }, 0);
-  }
-  // For shorts: short obligation reduces equity. We add the short's "credit" (avg_cost*shares received as cash, but we owe shares back)
-  // The net effect: equity = cash - (short_shares * current_price)
-  // Since cash already includes the proceeds, and positionsValue subtracts current short value, this works out.
-  const shortCredit = (remainingPositions ?? []).reduce((acc, p) => {
-    const r = p as { shares: number; avg_cost: number; side: "long" | "short" };
-    return r.side === "short" ? acc + Number(r.shares) * Number(r.avg_cost) : acc;
+  const shortStockCredit = (remainingPositions ?? []).reduce((acc, p) => {
+    const r = p as { shares: number; avg_cost: number; side: "long" | "short"; instrument_type: "stock" | "futures" };
+    return r.side === "short" && r.instrument_type === "stock"
+      ? acc + Number(r.shares) * Number(r.avg_cost)
+      : acc;
   }, 0);
-  const newEquity = newCash + positionsValue + shortCredit;
+  const newEquity = newCash + positionsValue + shortStockCredit;
   const newHWM = Math.max(Number(account.high_water_mark), newEquity);
 
   const todayStart = new Date();
@@ -749,7 +839,7 @@ async function applyCover(opts: {
   await sb.from("equity_snapshots").insert({
     account_id: account.id,
     cash: newCash,
-    positions_value: positionsValue + shortCredit,
+    positions_value: positionsValue + shortStockCredit,
     equity: newEquity,
   });
 

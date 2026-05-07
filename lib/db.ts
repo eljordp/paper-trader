@@ -36,6 +36,8 @@ export type DBPosition = {
   stop_loss: number | null;
   take_profit: number | null;
   side: "long" | "short";
+  instrument_type: "stock" | "futures";
+  margin_held: number | null;
 };
 
 export type DBTrade = {

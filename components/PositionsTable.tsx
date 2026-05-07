@@ -5,6 +5,7 @@ import { usePortfolio } from "./PortfolioProvider";
 import { useEffect, useState } from "react";
 import { money, pct, pnlColor, shares as fmtShares } from "@/lib/format";
 import { cn } from "@/lib/cn";
+import { getFuturesSpec, displaySymbol } from "@/lib/instruments";
 
 export default function PositionsTable() {
   const snapshot = usePortfolio();
@@ -44,12 +45,28 @@ export default function PositionsTable() {
   const rows = snapshot.positions.map((pos) => {
     const px = prices[pos.ticker];
     const isShort = pos.side === "short";
-    const value = (px ?? Number(pos.avg_cost)) * Number(pos.shares);
-    const cost = Number(pos.avg_cost) * Number(pos.shares);
-    // Long pnl = value - cost; Short pnl = cost - value
-    const pnl = isShort ? cost - value : value - cost;
-    const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
-    return { pos, px, value, cost, pnl, pnlPct, isShort };
+    const isFutures = pos.instrument_type === "futures";
+
+    let value: number;
+    let pnl: number;
+    let pnlPct: number;
+    if (isFutures) {
+      const spec = getFuturesSpec(pos.ticker);
+      const pv = spec?.pointValue ?? 1;
+      const current = px ?? Number(pos.avg_cost);
+      const move = isShort ? Number(pos.avg_cost) - current : current - Number(pos.avg_cost);
+      pnl = move * pv * Number(pos.shares);
+      const margin = Number(pos.margin_held ?? 0);
+      value = margin + pnl;
+      pnlPct = margin > 0 ? (pnl / margin) * 100 : 0;
+    } else {
+      const v = (px ?? Number(pos.avg_cost)) * Number(pos.shares);
+      const cost = Number(pos.avg_cost) * Number(pos.shares);
+      value = v;
+      pnl = isShort ? cost - v : v - cost;
+      pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
+    }
+    return { pos, px, value, pnl, pnlPct, isShort, isFutures };
   });
 
   return (
@@ -68,16 +85,21 @@ export default function PositionsTable() {
         <div className="text-right">Value</div>
         <div className="text-right">P&L</div>
       </div>
-      {rows.map(({ pos, px, value, pnl, pnlPct, isShort }) => (
+      {rows.map(({ pos, px, value, pnl, pnlPct, isShort, isFutures }) => (
         <Link
           key={pos.id}
-          href={`/trade/${pos.ticker}`}
+          href={`/trade/${encodeURIComponent(pos.ticker)}`}
           className="block hover:bg-[var(--color-surface-2)] transition-colors border-b border-[var(--color-border)] last:border-b-0"
         >
           {/* Desktop row */}
           <div className="hidden sm:grid grid-cols-[1fr_repeat(5,minmax(0,1fr))] gap-4 px-5 py-3.5">
             <div className="flex items-center gap-2">
-              <span className="font-mono font-medium">{pos.ticker}</span>
+              <span className="font-mono font-medium">{displaySymbol(pos.ticker)}</span>
+              {isFutures && (
+                <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--color-cyan)]/15 text-[var(--color-cyan)] border border-[var(--color-cyan)]/30">
+                  Futures
+                </span>
+              )}
               {isShort && (
                 <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--color-down)]/15 text-[var(--color-down)] border border-[var(--color-down)]/30">
                   Short
@@ -97,7 +119,12 @@ export default function PositionsTable() {
           <div className="sm:hidden grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-3.5 items-center">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="font-mono font-medium">{pos.ticker}</span>
+                <span className="font-mono font-medium">{displaySymbol(pos.ticker)}</span>
+                {isFutures && (
+                  <span className="text-[8px] uppercase tracking-wider px-1 rounded bg-[var(--color-cyan)]/15 text-[var(--color-cyan)]">
+                    F
+                  </span>
+                )}
                 {isShort && (
                   <span className="text-[8px] uppercase tracking-wider px-1 rounded bg-[var(--color-down)]/15 text-[var(--color-down)]">
                     S
@@ -105,7 +132,7 @@ export default function PositionsTable() {
                 )}
               </div>
               <div className="text-[11px] text-[var(--color-text-faint)] tnum font-mono">
-                {fmtShares(Number(pos.shares))} @ {money(Number(pos.avg_cost))}
+                {Number(pos.shares)} {isFutures ? "ct" : "sh"} @ {money(Number(pos.avg_cost))}
               </div>
             </div>
             <div className="text-right tnum font-mono text-sm">{money(value)}</div>

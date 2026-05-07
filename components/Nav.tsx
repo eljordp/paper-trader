@@ -13,6 +13,7 @@ import { LogOut, Sparkles, Clock, Shield } from "lucide-react";
 import { effectivePlan, isTrialActive, trialDaysRemaining } from "@/lib/plans";
 import { highestRole, hasRole, ROLES } from "@/lib/roles";
 import Avatar from "./Avatar";
+import { getFuturesSpec } from "@/lib/instruments";
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -65,6 +66,12 @@ export default function Nav() {
   if (snapshot && account) {
     const positionsValue = snapshot.positions.reduce((acc, p) => {
       const px = prices[p.ticker] ?? Number(p.avg_cost);
+      if (p.instrument_type === "futures") {
+        const spec = getFuturesSpec(p.ticker);
+        const pv = spec?.pointValue ?? 1;
+        const move = p.side === "long" ? px - Number(p.avg_cost) : Number(p.avg_cost) - px;
+        return acc + Number(p.margin_held ?? 0) + move * pv * Number(p.shares);
+      }
       const v = Number(p.shares) * px;
       return p.side === "short" ? acc - v : acc + v;
     }, 0);
