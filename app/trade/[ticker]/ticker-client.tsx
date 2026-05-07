@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import type { QuoteData } from "@/lib/yahoo";
-import PriceChart from "@/components/PriceChart";
+import TradingViewChart from "@/components/TradingViewChart";
 import TradeTicket from "@/components/TradeTicket";
 import NewsList from "@/components/NewsList";
 import StatTile from "@/components/StatTile";
@@ -80,8 +80,8 @@ export default function TickerClient({ ticker, initialQuote }: { ticker: string;
       </header>
 
       <div className="grid lg:grid-cols-[1fr_360px] gap-6">
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5">
-          <PriceChart ticker={ticker} change={quote.change} />
+        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden">
+          <TradingViewChart ticker={ticker} height={560} />
         </div>
         <TradeTicket ticker={ticker} price={quote.price} />
       </div>
