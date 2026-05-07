@@ -35,6 +35,19 @@ export type PortfolioSnapshot = {
   challengeStreak: number;
   /** User's active strategies for trade ticket dropdown */
   strategies: Array<{ id: string; name: string }>;
+  /** Open pending orders for the active account */
+  openOrders: Array<{
+    id: string;
+    ticker: string;
+    side: "buy" | "sell" | "short" | "cover";
+    order_type: "limit" | "stop";
+    qty: number;
+    limit_price: number | null;
+    stop_price: number | null;
+    stop_loss: number | null;
+    take_profit: number | null;
+    created_at: string;
+  }>;
 };
 
 /**
@@ -204,6 +217,20 @@ export async function loadPortfolio(): Promise<PortfolioSnapshot | null> {
     .order("created_at", { ascending: false });
   const strategies = ((stratRows ?? []) as Array<{ id: string; name: string }>) ?? [];
 
+  // Open pending orders for active account
+  let openOrders: PortfolioSnapshot["openOrders"] = [];
+  if (activeAccount) {
+    const { data: ordRows } = await sb
+      .from("pending_orders")
+      .select(
+        "id, ticker, side, order_type, qty, limit_price, stop_price, stop_loss, take_profit, created_at"
+      )
+      .eq("account_id", activeAccount.id)
+      .eq("status", "open")
+      .order("created_at", { ascending: false });
+    openOrders = (ordRows ?? []) as PortfolioSnapshot["openOrders"];
+  }
+
   return {
     profile: profile as DBProfile,
     activeAccount: (activeAccount as DBAccount) ?? null,
@@ -216,5 +243,6 @@ export async function loadPortfolio(): Promise<PortfolioSnapshot | null> {
     todayChallenge: (todayChallenge as DBChallenge) ?? null,
     challengeStreak,
     strategies,
+    openOrders,
   };
 }

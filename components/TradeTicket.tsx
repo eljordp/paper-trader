@@ -4,7 +4,13 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePortfolio } from "./PortfolioProvider";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { buy as buyAction, sell as sellAction, shortOpen as shortAction, cover as coverAction } from "@/lib/actions";
+import {
+  buy as buyAction,
+  sell as sellAction,
+  shortOpen as shortAction,
+  cover as coverAction,
+  createOrder as createOrderAction,
+} from "@/lib/actions";
 import { Shield, Target, Pencil, Brain, AlertOctagon, AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { TradeScore } from "@/lib/brain";
 
@@ -33,6 +39,8 @@ export default function TradeTicket({
   const [scoreLoading, setScoreLoading] = useState(false);
   const [strategyId, setStrategyId] = useState<string>("");
   const [isTraining, setIsTraining] = useState(false);
+  const [orderType, setOrderType] = useState<"market" | "limit" | "stop">("market");
+  const [triggerPrice, setTriggerPrice] = useState<string>("");
 
   const cash = account ? Number(account.cash) : 0;
   const numQty = parseFloat(qty);
@@ -95,10 +103,19 @@ export default function TradeTicket({
     !tpInvalid &&
     price > 0;
 
+  // Trigger price math (limit/stop)
+  const triggerNum = parseFloat(triggerPrice);
+  const triggerValid = orderType === "market" ? true : Number.isFinite(triggerNum) && triggerNum > 0;
+  const triggerInvalid = orderType !== "market" && triggerPrice.length > 0 && !triggerValid;
+
   const submit = () => {
     setError(null);
     setSuccess(null);
     if (!canSubmit || !account) return;
+    if (orderType !== "market" && !triggerValid) {
+      setError("Trigger price required");
+      return;
+    }
     const fd = new FormData();
     fd.set("accountId", account.id);
     fd.set("ticker", ticker);
@@ -111,23 +128,33 @@ export default function TradeTicket({
     if (strategyId) fd.set("strategyId", strategyId);
     if (isTraining) fd.set("isTraining", "true");
     startTransition(async () => {
-      const action =
-        side === "buy"
-          ? buyAction
-          : side === "sell"
-          ? sellAction
-          : side === "short"
-          ? shortAction
-          : coverAction;
-      const res = await action(fd);
+      let res: { error?: string; success?: string };
+      if (orderType !== "market") {
+        // Pending limit/stop order
+        fd.set("side", side);
+        fd.set("orderType", orderType);
+        fd.set("triggerPrice", String(triggerNum));
+        res = await createOrderAction(fd);
+      } else {
+        const action =
+          side === "buy"
+            ? buyAction
+            : side === "sell"
+            ? sellAction
+            : side === "short"
+            ? shortAction
+            : coverAction;
+        res = await action(fd);
+      }
       if (res?.error) setError(res.error);
       if (res?.success) {
         setSuccess(res.success);
         setQty("");
         setStopLoss("");
         setTakeProfit("");
+        setTriggerPrice("");
         setNotes("");
-        // Keep strategyId + isTraining sticky between trades
+        // Keep strategyId + isTraining + orderType sticky between trades
         setTimeout(() => setSuccess(null), 5000);
       }
     });
@@ -239,7 +266,7 @@ export default function TradeTicket({
           Sell
         </button>
       </div>
-      <div className="grid grid-cols-2 gap-1 p-1 bg-[var(--color-bg)] rounded-md mb-4">
+      <div className="grid grid-cols-2 gap-1 p-1 bg-[var(--color-bg)] rounded-md mb-3">
         <button
           onClick={() => setSide("short")}
           className={cn(
@@ -262,6 +289,24 @@ export default function TradeTicket({
         >
           Cover
         </button>
+      </div>
+
+      {/* Order type */}
+      <div className="grid grid-cols-3 gap-1 p-1 bg-[var(--color-bg)] rounded-md mb-4">
+        {(["market", "limit", "stop"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setOrderType(t)}
+            className={cn(
+              "py-1 text-[10px] font-medium uppercase tracking-wider rounded transition-colors",
+              orderType === t
+                ? "bg-[var(--color-surface-2)] text-[var(--color-text)]"
+                : "text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)]"
+            )}
+          >
+            {t}
+          </button>
+        ))}
       </div>
 
       <div className="space-y-3">
@@ -298,6 +343,42 @@ export default function TradeTicket({
             ))}
           </div>
         </div>
+
+        {/* Limit / Stop trigger price */}
+        {orderType !== "market" && (
+          <div>
+            <label className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1.5 block">
+              {orderType === "limit" ? "Limit price" : "Stop price"}
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={triggerPrice}
+              onChange={(e) => setTriggerPrice(e.target.value)}
+              placeholder={
+                orderType === "limit"
+                  ? side === "buy" || side === "cover"
+                    ? `≤ ${price.toFixed(2)} fills`
+                    : `≥ ${price.toFixed(2)} fills`
+                  : side === "buy" || side === "cover"
+                  ? `≥ ${price.toFixed(2)} fires`
+                  : `≤ ${price.toFixed(2)} fires`
+              }
+              className={cn(
+                "w-full bg-[var(--color-bg)] border rounded-md px-3 h-9 text-sm tnum font-mono focus:outline-none",
+                triggerInvalid
+                  ? "border-[var(--color-down)]/50"
+                  : "border-[var(--color-border)] focus:border-[var(--color-border-strong)]"
+              )}
+            />
+            <div className="text-[10px] text-[var(--color-text-faint)] mt-1">
+              {orderType === "limit"
+                ? "Order sits open until price reaches your limit. Fills at limit or better."
+                : "Order fires when price crosses your stop. Fills at next available price."}
+            </div>
+          </div>
+        )}
 
         {/* Bracket orders — on opening trades (buy or short) */}
         {isOpening && (
@@ -439,7 +520,13 @@ export default function TradeTicket({
         </div>
 
         <div className="hairline pt-3 space-y-1.5 text-sm">
-          <Row label="Price" value={money(price)} />
+          <Row label={orderType === "market" ? "Price (market)" : "Last"} value={money(price)} />
+          {orderType !== "market" && triggerValid && (
+            <Row
+              label={orderType === "limit" ? "Limit price" : "Stop price"}
+              value={money(triggerNum)}
+            />
+          )}
           <Row label="Estimated total" value={money(total)} bold />
           <Row label="Buying power" value={money(cash)} muted />
         </div>
@@ -460,12 +547,12 @@ export default function TradeTicket({
 
         <button
           onClick={submit}
-          disabled={!canSubmit || pending}
+          disabled={!canSubmit || pending || (orderType !== "market" && !triggerValid)}
           className={cn(
             "w-full h-11 rounded-md font-medium text-sm transition-colors",
-            (!canSubmit || pending) && "bg-[var(--color-surface-2)] text-[var(--color-text-faint)] cursor-not-allowed",
-            canSubmit && !pending && (side === "buy" || side === "cover") && "bg-[var(--color-up)] text-black hover:opacity-90",
-            canSubmit && !pending && (side === "sell" || side === "short") && "bg-[var(--color-down)] text-black hover:opacity-90"
+            (!canSubmit || pending || (orderType !== "market" && !triggerValid)) && "bg-[var(--color-surface-2)] text-[var(--color-text-faint)] cursor-not-allowed",
+            canSubmit && !pending && triggerValid && (side === "buy" || side === "cover") && "bg-[var(--color-up)] text-black hover:opacity-90",
+            canSubmit && !pending && triggerValid && (side === "sell" || side === "short") && "bg-[var(--color-down)] text-black hover:opacity-90"
           )}
         >
           {pending
@@ -480,18 +567,30 @@ export default function TradeTicket({
             ? "Not enough shares"
             : wrongSidePosition
             ? "Wrong side"
+            : triggerInvalid
+            ? "Invalid trigger price"
             : slInvalid
             ? "Invalid stop"
             : tpInvalid
             ? "Invalid target"
             : `${
-                side === "buy"
-                  ? "Buy"
-                  : side === "sell"
-                  ? "Sell"
-                  : side === "short"
-                  ? "Short"
-                  : "Cover"
+                orderType === "market"
+                  ? side === "buy"
+                    ? "Buy"
+                    : side === "sell"
+                    ? "Sell"
+                    : side === "short"
+                    ? "Short"
+                    : "Cover"
+                  : `Place ${orderType} ${
+                      side === "buy"
+                        ? "buy"
+                        : side === "sell"
+                        ? "sell"
+                        : side === "short"
+                        ? "short"
+                        : "cover"
+                    }`
               } ${ticker}`}
         </button>
 

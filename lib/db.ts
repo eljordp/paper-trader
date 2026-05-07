@@ -62,6 +62,31 @@ export type DBTrade = {
   created_at: string;
 };
 
+export type DBPendingOrder = {
+  id: string;
+  account_id: string;
+  user_id: string;
+  ticker: string;
+  side: "buy" | "sell" | "short" | "cover";
+  order_type: "limit" | "stop";
+  qty: number;
+  limit_price: number | null;
+  stop_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  strategy_id: string | null;
+  is_training: boolean;
+  notes: string | null;
+  status: "open" | "filled" | "canceled" | "expired" | "rejected";
+  filled_trade_id: string | null;
+  fill_price: number | null;
+  rejection_reason: string | null;
+  expires_at: string | null;
+  created_at: string;
+  filled_at: string | null;
+  canceled_at: string | null;
+};
+
 export type DBProfile = {
   id: string;
   email: string | null;

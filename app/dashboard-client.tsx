@@ -7,6 +7,7 @@ import PositionsTable from "@/components/PositionsTable";
 import NewsList from "@/components/NewsList";
 import EquityCurve from "@/components/EquityCurve";
 import EvalCoach from "@/components/EvalCoach";
+import OpenOrders from "@/components/OpenOrders";
 import { money, pct } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { TermLabel } from "@/components/Tooltip";
@@ -364,6 +365,9 @@ export default function DashboardClient({
           />
         </div>
       </section>
+
+      {/* OPEN ORDERS */}
+      <OpenOrders />
 
       {/* POSITIONS */}
       <section className="space-y-4">

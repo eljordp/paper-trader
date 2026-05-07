@@ -5,6 +5,7 @@ import Nav from "@/components/Nav";
 import MobileNav from "@/components/MobileNav";
 import { PortfolioProvider } from "@/components/PortfolioProvider";
 import BracketWatcher from "@/components/BracketWatcher";
+import OrderWatcher from "@/components/OrderWatcher";
 import { loadPortfolio } from "@/lib/portfolio-data";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -50,6 +51,7 @@ export default async function RootLayout({
           <main className="flex-1 pb-20 md:pb-0">{children}</main>
           <MobileNav />
           <BracketWatcher />
+          <OrderWatcher />
         </PortfolioProvider>
       </body>
     </html>

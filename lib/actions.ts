@@ -818,6 +818,231 @@ export async function cover(formData: FormData) {
   }
 }
 
+// =============================================================================
+// PENDING ORDERS — limit & stop entry orders
+// =============================================================================
+
+type OrderSide = "buy" | "sell" | "short" | "cover";
+type OrderType = "limit" | "stop";
+
+export async function createOrder(formData: FormData) {
+  const accountId = String(formData.get("accountId") ?? "");
+  const ticker = String(formData.get("ticker") ?? "").toUpperCase();
+  const side = String(formData.get("side") ?? "") as OrderSide;
+  const orderType = String(formData.get("orderType") ?? "") as OrderType;
+  const qty = Number(formData.get("qty"));
+  const triggerPriceRaw = formData.get("triggerPrice");
+  const stopLossRaw = formData.get("stopLoss");
+  const takeProfitRaw = formData.get("takeProfit");
+  const notes = String(formData.get("notes") ?? "").trim() || null;
+  const strategyId = String(formData.get("strategyId") ?? "").trim() || null;
+  const isTraining = formData.get("isTraining") === "true";
+
+  if (!accountId || !ticker || !["buy", "sell", "short", "cover"].includes(side)) {
+    return { error: "Invalid input" };
+  }
+  if (!["limit", "stop"].includes(orderType)) return { error: "Invalid order type" };
+  if (!Number.isFinite(qty) || qty <= 0) return { error: "Invalid quantity" };
+  const triggerPrice = triggerPriceRaw ? Number(triggerPriceRaw) : null;
+  if (!Number.isFinite(triggerPrice) || (triggerPrice ?? 0) <= 0) {
+    return { error: "Trigger price required" };
+  }
+  const stopLoss = stopLossRaw ? Number(stopLossRaw) : null;
+  const takeProfit = takeProfitRaw ? Number(takeProfitRaw) : null;
+
+  const { sb, user, account } = await requireAccount(accountId);
+  if (account.status !== "active") {
+    return { error: `Account is ${account.status}, can't trade` };
+  }
+
+  const insert: Record<string, unknown> = {
+    account_id: accountId,
+    user_id: user.id,
+    ticker,
+    side,
+    order_type: orderType,
+    qty,
+    notes,
+    strategy_id: strategyId,
+    is_training: isTraining,
+    stop_loss: stopLoss,
+    take_profit: takeProfit,
+  };
+  if (orderType === "limit") insert.limit_price = triggerPrice;
+  else insert.stop_price = triggerPrice;
+
+  const { data, error } = await sb
+    .from("pending_orders")
+    .insert(insert)
+    .select()
+    .single();
+  if (error) return { error: error.message };
+
+  revalidatePath("/", "layout");
+  return {
+    success: `${orderType === "limit" ? "Limit" : "Stop"} ${side} order placed for ${qty} ${ticker} @ $${triggerPrice!.toFixed(2)}`,
+    orderId: (data as { id: string }).id,
+  };
+}
+
+export async function cancelOrder(orderId: string) {
+  const { sb, user } = await requireUser();
+  await sb
+    .from("pending_orders")
+    .update({
+      status: "canceled",
+      canceled_at: new Date().toISOString(),
+    })
+    .eq("id", orderId)
+    .eq("user_id", user.id)
+    .eq("status", "open");
+  revalidatePath("/", "layout");
+}
+
+/**
+ * Scan the active account's open orders, fire any whose trigger has been hit.
+ * Called by client polling and (eventually) by Vercel Cron.
+ */
+export async function checkOrders(): Promise<{ filled: Array<{ ticker: string; side: string; price: number }> }> {
+  const { sb, user } = await requireUser();
+  const { data: profile } = await sb
+    .from("profiles")
+    .select("active_account_id")
+    .eq("id", user.id)
+    .single();
+  const accountId = (profile as { active_account_id: string | null } | null)?.active_account_id;
+  if (!accountId) return { filled: [] };
+
+  const { data: account } = await sb
+    .from("accounts")
+    .select("*")
+    .eq("id", accountId)
+    .single();
+  if (!account || account.status !== "active") return { filled: [] };
+
+  const { data: openOrders } = await sb
+    .from("pending_orders")
+    .select("*")
+    .eq("account_id", accountId)
+    .eq("status", "open");
+  if (!openOrders || openOrders.length === 0) return { filled: [] };
+
+  // Expire any past expiry first
+  const now = new Date();
+  for (const o of openOrders as Array<{ id: string; expires_at: string | null }>) {
+    if (o.expires_at && new Date(o.expires_at) < now) {
+      await sb
+        .from("pending_orders")
+        .update({ status: "expired", canceled_at: now.toISOString() })
+        .eq("id", o.id);
+    }
+  }
+
+  const stillOpen = (openOrders as Array<{
+    id: string;
+    ticker: string;
+    side: OrderSide;
+    order_type: OrderType;
+    qty: number;
+    limit_price: number | null;
+    stop_price: number | null;
+    stop_loss: number | null;
+    take_profit: number | null;
+    notes: string | null;
+    strategy_id: string | null;
+    is_training: boolean;
+    expires_at: string | null;
+  }>).filter((o) => !o.expires_at || new Date(o.expires_at) >= now);
+  if (stillOpen.length === 0) return { filled: [] };
+
+  const tickers = Array.from(new Set(stillOpen.map((o) => o.ticker)));
+  const quotes = await getQuotes(tickers);
+
+  const filled: Array<{ ticker: string; side: string; price: number }> = [];
+
+  for (const o of stillOpen) {
+    const px = quotes[o.ticker]?.price;
+    if (!Number.isFinite(px)) continue;
+
+    let triggered = false;
+    let fillPrice = px;
+    if (o.order_type === "limit" && o.limit_price != null) {
+      const lp = Number(o.limit_price);
+      // Buy/cover limits trigger when price <= limit (fill at limit or better)
+      // Sell/short limits trigger when price >= limit (fill at limit or better)
+      if ((o.side === "buy" || o.side === "cover") && px <= lp) {
+        triggered = true;
+        fillPrice = Math.min(px, lp);
+      } else if ((o.side === "sell" || o.side === "short") && px >= lp) {
+        triggered = true;
+        fillPrice = Math.max(px, lp);
+      }
+    } else if (o.order_type === "stop" && o.stop_price != null) {
+      const sp = Number(o.stop_price);
+      // Buy stop triggers when price >= stop (breakout)
+      // Sell stop / short stop triggers when price <= stop (breakdown)
+      // Cover stop triggers when price >= stop
+      if ((o.side === "buy" || o.side === "cover") && px >= sp) {
+        triggered = true;
+        fillPrice = px;
+      } else if ((o.side === "sell" || o.side === "short") && px <= sp) {
+        triggered = true;
+        fillPrice = px;
+      }
+    }
+
+    if (!triggered) continue;
+
+    // Build a FormData and call the corresponding action.
+    // For closes (sell/cover), don't pass stop/target.
+    const fd = new FormData();
+    fd.set("accountId", accountId);
+    fd.set("ticker", o.ticker);
+    fd.set("qty", String(o.qty));
+    if (o.notes) fd.set("notes", o.notes);
+    if (o.strategy_id) fd.set("strategyId", o.strategy_id);
+    if (o.is_training) fd.set("isTraining", "true");
+    if (o.side === "buy" || o.side === "short") {
+      if (o.stop_loss != null) fd.set("stopLoss", String(o.stop_loss));
+      if (o.take_profit != null) fd.set("takeProfit", String(o.take_profit));
+    }
+
+    let result: { error?: string; success?: string } = {};
+    try {
+      if (o.side === "buy") result = await buy(fd);
+      else if (o.side === "sell") result = await sell(fd);
+      else if (o.side === "short") result = await shortOpen(fd);
+      else if (o.side === "cover") result = await cover(fd);
+    } catch (e) {
+      result = { error: e instanceof Error ? e.message : "Order fill failed" };
+    }
+
+    if (result.error) {
+      await sb
+        .from("pending_orders")
+        .update({
+          status: "rejected",
+          rejection_reason: result.error,
+          canceled_at: now.toISOString(),
+        })
+        .eq("id", o.id);
+    } else {
+      await sb
+        .from("pending_orders")
+        .update({
+          status: "filled",
+          fill_price: fillPrice,
+          filled_at: now.toISOString(),
+        })
+        .eq("id", o.id);
+      filled.push({ ticker: o.ticker, side: o.side, price: fillPrice });
+    }
+  }
+
+  if (filled.length > 0) revalidatePath("/", "layout");
+  return { filled };
+}
+
 export async function setBracket(formData: FormData) {
   const ticker = String(formData.get("ticker") ?? "").toUpperCase();
   const stopLossRaw = formData.get("stopLoss");
