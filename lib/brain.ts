@@ -294,6 +294,171 @@ export async function runEvalCoach(input: EvalCoachInput): Promise<EvalCoachOutp
   }
 }
 
+// =============================================================================
+// STRATEGY COACH — analyzes a single strategy's performance and gives feedback
+// =============================================================================
+
+export type StrategyCoachOutput = {
+  verdict: "edge_confirmed" | "promising" | "no_edge_yet" | "drift" | "broken";
+  headline: string;
+  whatWorks: string[];
+  whatToFix: string[];
+  nextStep: string;
+};
+
+export type StrategyCoachInput = {
+  strategy: {
+    name: string;
+    description: string | null;
+    entryRules: string | null;
+    exitRules: string | null;
+    sizeRules: string | null;
+    timeWindow: string | null;
+    instruments: string[] | null;
+  };
+  stats: {
+    totalTrades: number;
+    closes: number;
+    wins: number;
+    losses: number;
+    winRate: number | null;
+    avgWin: number | null;
+    avgLoss: number | null;
+    avgRR: number | null;
+    expectancy: number | null;
+    largestWin: number | null;
+    largestLoss: number | null;
+    totalRealized: number;
+    trainingTrades: number;
+  };
+  recentTrades: Array<{
+    ticker: string;
+    side: string;
+    realizedPnl: number | null;
+    isTraining: boolean;
+    notes: string | null;
+    triggeredBy: string | null;
+    timeOfDay: string; // hh:mm UTC
+    dayOfWeek: string; // Mon, Tue...
+    daysAgo: number;
+  }>;
+};
+
+const STRATEGY_COACH_SYSTEM = `You are a hard-edged trading mentor analyzing one specific strategy a user has been running.
+
+Your job: read the strategy's defined rules and the trades tagged to it. Tell them honestly:
+1. Whether there's an edge yet (need 20+ trades to call confirmed)
+2. What's working specifically (best setups, time-of-day, win conditions)
+3. What's drifting from the rules (rule violations, post-loss tilt, oversize)
+4. The single next step they should take
+
+Be quantitative. Cite numbers from the data. Don't hedge with "may" or "consider" — be direct.
+Don't recommend stock picks. Don't give entry signals. Analyze BEHAVIOR.
+
+Verdicts:
+- "edge_confirmed" — 20+ closed trades, profit factor > 1.5, expectancy positive
+- "promising" — 10-19 trades, expectancy positive, looking good
+- "no_edge_yet" — under 10 closed trades, can't tell
+- "drift" — has trades but rule violations are visible (tagging non-strategy trades, wrong time, etc)
+- "broken" — 20+ trades, expectancy negative, edge isn't there
+
+Output strict JSON:
+{
+  "verdict": "...",
+  "headline": "12 words max — the verdict",
+  "whatWorks": ["specific observation with number", ...],  // 1-3 items, can be empty
+  "whatToFix": ["specific issue with number", ...],         // 1-3 items, can be empty
+  "nextStep": "One sentence — the single most important action"
+}`;
+
+function buildStrategyCoachPrompt(input: StrategyCoachInput): string {
+  const s = input.strategy;
+  const st = input.stats;
+
+  const recent = input.recentTrades.length
+    ? input.recentTrades
+        .slice(0, 15)
+        .map(
+          (t) =>
+            `  ${t.daysAgo}d ago, ${t.dayOfWeek} ${t.timeOfDay} — ${t.side.toUpperCase()} ${t.ticker}` +
+            (t.realizedPnl != null
+              ? ` (${t.realizedPnl >= 0 ? "+" : ""}$${t.realizedPnl.toFixed(0)})`
+              : "") +
+            (t.isTraining ? " [training]" : "") +
+            (t.triggeredBy && t.triggeredBy !== "manual" ? ` [${t.triggeredBy}]` : "") +
+            (t.notes ? ` "${t.notes.slice(0, 60)}"` : "")
+        )
+        .join("\n")
+    : "  none";
+
+  return `STRATEGY: ${s.name}
+${s.description ? `Description: ${s.description}` : ""}
+
+DEFINED RULES:
+  Entry: ${s.entryRules ?? "(not set)"}
+  Exit: ${s.exitRules ?? "(not set)"}
+  Sizing: ${s.sizeRules ?? "(not set)"}
+  Time window: ${s.timeWindow ?? "(any)"}
+  Instruments: ${s.instruments?.join(", ") ?? "(any)"}
+
+PERFORMANCE:
+  Total trades tagged: ${st.totalTrades} (${st.trainingTrades} were training-mode)
+  Closed (with realized P&L): ${st.closes}
+  Wins: ${st.wins}, Losses: ${st.losses}
+  Win rate: ${st.winRate != null ? (st.winRate * 100).toFixed(0) + "%" : "n/a"}
+  Avg winner: ${st.avgWin != null ? "$" + st.avgWin.toFixed(2) : "n/a"}
+  Avg loser: ${st.avgLoss != null ? "$" + st.avgLoss.toFixed(2) : "n/a"}
+  Avg R/R: ${st.avgRR != null ? st.avgRR.toFixed(2) + ":1" : "n/a"}
+  Expectancy: ${st.expectancy != null ? "$" + st.expectancy.toFixed(2) + "/trade" : "n/a"}
+  Largest win: ${st.largestWin != null ? "$" + st.largestWin.toFixed(2) : "n/a"}
+  Largest loss: ${st.largestLoss != null ? "$" + st.largestLoss.toFixed(2) : "n/a"}
+  Total realized: ${st.totalRealized >= 0 ? "+" : ""}$${st.totalRealized.toFixed(2)}
+
+RECENT TRADES (last 15):
+${recent}
+
+Analyze. Return JSON only.`;
+}
+
+export async function runStrategyCoach(
+  input: StrategyCoachInput
+): Promise<StrategyCoachOutput | null> {
+  const oai = client();
+  if (!oai) return null;
+
+  if (input.stats.totalTrades === 0) {
+    return {
+      verdict: "no_edge_yet",
+      headline: "No tagged trades yet. Take 5–10 to start the analysis.",
+      whatWorks: [],
+      whatToFix: [],
+      nextStep: "Tag your next trade with this strategy on the trade ticket.",
+    };
+  }
+
+  try {
+    const completion = await oai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: STRATEGY_COACH_SYSTEM },
+        { role: "user", content: buildStrategyCoachPrompt(input) },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.3,
+      max_tokens: 600,
+    });
+    const raw = completion.choices[0]?.message?.content;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StrategyCoachOutput;
+    parsed.whatWorks = (parsed.whatWorks ?? []).slice(0, 3);
+    parsed.whatToFix = (parsed.whatToFix ?? []).slice(0, 3);
+    return parsed;
+  } catch (e) {
+    console.error("[brain] runStrategyCoach error:", e);
+    return null;
+  }
+}
+
 export async function scoreTrade(input: ScoreInput): Promise<TradeScore | null> {
   const oai = client();
   if (!oai) return null;

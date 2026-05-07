@@ -17,6 +17,7 @@ import Avatar from "./Avatar";
 const links = [
   { href: "/", label: "Dashboard" },
   { href: "/portfolio", label: "Portfolio" },
+  { href: "/strategies", label: "Strategies" },
   { href: "/history", label: "History" },
   { href: "/watchlist", label: "Watchlist" },
   { href: "/leaderboard", label: "Leaderboard" },

@@ -117,6 +117,8 @@ async function applySell(opts: {
   price: number;
   triggeredBy: "manual" | "stop" | "target" | "eval_failed";
   notes?: string;
+  strategyId?: string | null;
+  isTraining?: boolean;
 }) {
   const { sb, user, account, ticker, qty, price, triggeredBy } = opts;
 
@@ -156,6 +158,8 @@ async function applySell(opts: {
     realized_pnl: realizedPnl,
     triggered_by: triggeredBy,
     notes: opts.notes ?? null,
+    strategy_id: opts.strategyId ?? null,
+    is_training: opts.isTraining ?? false,
   });
 
   const today = new Date().toISOString().slice(0, 10);
@@ -266,6 +270,8 @@ export async function buy(formData: FormData) {
   const stopLossRaw = formData.get("stopLoss");
   const takeProfitRaw = formData.get("takeProfit");
   const notes = String(formData.get("notes") ?? "").trim() || null;
+  const strategyId = String(formData.get("strategyId") ?? "").trim() || null;
+  const isTraining = formData.get("isTraining") === "true";
   const stopLoss = stopLossRaw ? Number(stopLossRaw) : null;
   const takeProfit = takeProfitRaw ? Number(takeProfitRaw) : null;
 
@@ -360,6 +366,8 @@ export async function buy(formData: FormData) {
     total,
     notes,
     triggered_by: "manual",
+    strategy_id: strategyId,
+    is_training: isTraining,
   });
 
   const today = new Date().toISOString().slice(0, 10);
@@ -394,6 +402,9 @@ export async function sell(formData: FormData) {
   const ticker = String(formData.get("ticker") ?? "").toUpperCase();
   const qty = Number(formData.get("qty"));
   const notes = String(formData.get("notes") ?? "").trim() || undefined;
+  const strategyIdRaw = String(formData.get("strategyId") ?? "").trim();
+  const strategyId = strategyIdRaw.length > 0 ? strategyIdRaw : null;
+  const isTraining = formData.get("isTraining") === "true";
 
   if (!accountId || !ticker || !Number.isFinite(qty) || qty <= 0) {
     return { error: "Invalid input" };
@@ -418,6 +429,8 @@ export async function sell(formData: FormData) {
       price: quote.price,
       triggeredBy: "manual",
       notes,
+      strategyId,
+      isTraining,
     });
 
     // Daily challenge: profitable_close

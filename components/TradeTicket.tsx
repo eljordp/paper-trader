@@ -31,6 +31,8 @@ export default function TradeTicket({
   const [pending, startTransition] = useTransition();
   const [score, setScore] = useState<TradeScore | null>(null);
   const [scoreLoading, setScoreLoading] = useState(false);
+  const [strategyId, setStrategyId] = useState<string>("");
+  const [isTraining, setIsTraining] = useState(false);
 
   const cash = account ? Number(account.cash) : 0;
   const numQty = parseFloat(qty);
@@ -82,6 +84,8 @@ export default function TradeTicket({
       if (tpValid) fd.set("takeProfit", String(tpNum));
     }
     if (notes.trim().length > 0) fd.set("notes", notes.trim());
+    if (strategyId) fd.set("strategyId", strategyId);
+    if (isTraining) fd.set("isTraining", "true");
     startTransition(async () => {
       const action = side === "buy" ? buyAction : sellAction;
       const res = await action(fd);
@@ -92,6 +96,7 @@ export default function TradeTicket({
         setStopLoss("");
         setTakeProfit("");
         setNotes("");
+        // Keep strategyId + isTraining sticky between trades
         setTimeout(() => setSuccess(null), 5000);
       }
     });
@@ -303,6 +308,43 @@ export default function TradeTicket({
                   </div>
                 )}
               </div>
+            )}
+          </div>
+        )}
+
+        {/* Strategy + training mode */}
+        {snapshot && snapshot.strategies && snapshot.strategies.length > 0 && (
+          <div className="space-y-2">
+            <label className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">
+              Strategy
+            </label>
+            <select
+              value={strategyId}
+              onChange={(e) => setStrategyId(e.target.value)}
+              className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded-md px-3 h-9 text-sm focus:outline-none focus:border-[var(--color-border-strong)]"
+            >
+              <option value="">— Untagged —</option>
+              {snapshot.strategies.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            {strategyId && (
+              <label className="flex items-center gap-2 cursor-pointer text-[11px]">
+                <input
+                  type="checkbox"
+                  checked={isTraining}
+                  onChange={(e) => setIsTraining(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded accent-[var(--color-cyan)]"
+                />
+                <span className="text-[var(--color-text-dim)]">
+                  Training mode
+                  <span className="text-[var(--color-text-faint)] ml-1">
+                    — small size, doesn&apos;t weigh as heavily in stats
+                  </span>
+                </span>
+              </label>
             )}
           </div>
         )}

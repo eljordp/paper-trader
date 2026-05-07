@@ -33,6 +33,8 @@ export type PortfolioSnapshot = {
   todayChallenge: DBChallenge | null;
   /** Consecutive completed-challenge days, ending today or yesterday */
   challengeStreak: number;
+  /** User's active strategies for trade ticket dropdown */
+  strategies: Array<{ id: string; name: string }>;
 };
 
 /**
@@ -193,6 +195,15 @@ export async function loadPortfolio(): Promise<PortfolioSnapshot | null> {
     }
   }
 
+  // Active strategies (for trade ticket dropdown)
+  const { data: stratRows } = await sb
+    .from("strategies")
+    .select("id, name")
+    .eq("user_id", user.id)
+    .eq("is_active", true)
+    .order("created_at", { ascending: false });
+  const strategies = ((stratRows ?? []) as Array<{ id: string; name: string }>) ?? [];
+
   return {
     profile: profile as DBProfile,
     activeAccount: (activeAccount as DBAccount) ?? null,
@@ -204,5 +215,6 @@ export async function loadPortfolio(): Promise<PortfolioSnapshot | null> {
     todayRealizedPnl,
     todayChallenge: (todayChallenge as DBChallenge) ?? null,
     challengeStreak,
+    strategies,
   };
 }
