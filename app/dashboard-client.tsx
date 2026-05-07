@@ -89,7 +89,8 @@ export default function DashboardClient({
   const cash = Number(account.cash);
   const positionsValue = snapshot.positions.reduce((acc, p) => {
     const px = prices[p.ticker] ?? Number(p.avg_cost);
-    return acc + Number(p.shares) * px;
+    const v = Number(p.shares) * px;
+    return p.side === "short" ? acc - v : acc + v;
   }, 0);
   const equity = cash + positionsValue;
   const totalPnl = equity - Number(account.starting_cash);
@@ -98,7 +99,9 @@ export default function DashboardClient({
   const unrealized = snapshot.positions.reduce((a, p) => {
     const px = prices[p.ticker];
     if (!Number.isFinite(px)) return a;
-    return a + Number(p.shares) * (px - Number(p.avg_cost));
+    // Long: (price - avg_cost) * shares; Short: (avg_cost - price) * shares
+    const sign = p.side === "short" ? -1 : 1;
+    return a + sign * Number(p.shares) * (px - Number(p.avg_cost));
   }, 0);
 
   // Day's P&L vs yesterday's close (or starting cash on day 1)

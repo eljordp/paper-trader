@@ -65,7 +65,8 @@ export default function Nav() {
   if (snapshot && account) {
     const positionsValue = snapshot.positions.reduce((acc, p) => {
       const px = prices[p.ticker] ?? Number(p.avg_cost);
-      return acc + Number(p.shares) * px;
+      const v = Number(p.shares) * px;
+      return p.side === "short" ? acc - v : acc + v;
     }, 0);
     equity = Number(account.cash) + positionsValue;
     change = equity - Number(account.starting_cash);

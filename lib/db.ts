@@ -35,13 +35,14 @@ export type DBPosition = {
   opened_at: string;
   stop_loss: number | null;
   take_profit: number | null;
+  side: "long" | "short";
 };
 
 export type DBTrade = {
   id: string;
   account_id: string;
   ticker: string;
-  side: "buy" | "sell";
+  side: "buy" | "sell" | "short" | "cover";
   shares: number;
   price: number;
   total: number;

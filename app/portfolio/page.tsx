@@ -38,7 +38,8 @@ export default function PortfolioPage() {
   const cash = Number(account.cash);
   const invested = snapshot.positions.reduce((a, p) => {
     const px = prices[p.ticker] ?? Number(p.avg_cost);
-    return a + Number(p.shares) * px;
+    const v = Number(p.shares) * px;
+    return p.side === "short" ? a - v : a + v;
   }, 0);
   const equity = cash + invested;
   const totalPnl = equity - Number(account.starting_cash);
@@ -47,7 +48,8 @@ export default function PortfolioPage() {
   const unrealized = snapshot.positions.reduce((a, p) => {
     const px = prices[p.ticker];
     if (!Number.isFinite(px)) return a;
-    return a + Number(p.shares) * (px - Number(p.avg_cost));
+    const sign = p.side === "short" ? -1 : 1;
+    return a + sign * Number(p.shares) * (px - Number(p.avg_cost));
   }, 0);
 
   return (

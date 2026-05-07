@@ -43,11 +43,13 @@ export default function PositionsTable() {
 
   const rows = snapshot.positions.map((pos) => {
     const px = prices[pos.ticker];
+    const isShort = pos.side === "short";
     const value = (px ?? Number(pos.avg_cost)) * Number(pos.shares);
     const cost = Number(pos.avg_cost) * Number(pos.shares);
-    const pnl = value - cost;
+    // Long pnl = value - cost; Short pnl = cost - value
+    const pnl = isShort ? cost - value : value - cost;
     const pnlPct = cost > 0 ? (pnl / cost) * 100 : 0;
-    return { pos, px, value, cost, pnl, pnlPct };
+    return { pos, px, value, cost, pnl, pnlPct, isShort };
   });
 
   return (
@@ -66,7 +68,7 @@ export default function PositionsTable() {
         <div className="text-right">Value</div>
         <div className="text-right">P&L</div>
       </div>
-      {rows.map(({ pos, px, value, pnl, pnlPct }) => (
+      {rows.map(({ pos, px, value, pnl, pnlPct, isShort }) => (
         <Link
           key={pos.id}
           href={`/trade/${pos.ticker}`}
@@ -74,7 +76,14 @@ export default function PositionsTable() {
         >
           {/* Desktop row */}
           <div className="hidden sm:grid grid-cols-[1fr_repeat(5,minmax(0,1fr))] gap-4 px-5 py-3.5">
-            <div className="font-mono font-medium">{pos.ticker}</div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono font-medium">{pos.ticker}</span>
+              {isShort && (
+                <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--color-down)]/15 text-[var(--color-down)] border border-[var(--color-down)]/30">
+                  Short
+                </span>
+              )}
+            </div>
             <div className="text-right tnum font-mono text-sm">{fmtShares(Number(pos.shares))}</div>
             <div className="text-right tnum font-mono text-sm text-[var(--color-text-dim)]">{money(Number(pos.avg_cost))}</div>
             <div className="text-right tnum font-mono text-sm">{px ? money(px) : "—"}</div>
@@ -87,7 +96,14 @@ export default function PositionsTable() {
           {/* Mobile row — compact 3 cols */}
           <div className="sm:hidden grid grid-cols-[1fr_auto_auto] gap-3 px-4 py-3.5 items-center">
             <div className="min-w-0">
-              <div className="font-mono font-medium">{pos.ticker}</div>
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono font-medium">{pos.ticker}</span>
+                {isShort && (
+                  <span className="text-[8px] uppercase tracking-wider px-1 rounded bg-[var(--color-down)]/15 text-[var(--color-down)]">
+                    S
+                  </span>
+                )}
+              </div>
               <div className="text-[11px] text-[var(--color-text-faint)] tnum font-mono">
                 {fmtShares(Number(pos.shares))} @ {money(Number(pos.avg_cost))}
               </div>

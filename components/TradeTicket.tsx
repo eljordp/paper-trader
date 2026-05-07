@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePortfolio } from "./PortfolioProvider";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { buy as buyAction, sell as sellAction } from "@/lib/actions";
+import { buy as buyAction, sell as sellAction, shortOpen as shortAction, cover as coverAction } from "@/lib/actions";
 import { Shield, Target, Pencil, Brain, AlertOctagon, AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { TradeScore } from "@/lib/brain";
 
@@ -19,7 +19,7 @@ export default function TradeTicket({
   const account = snapshot?.activeAccount;
   const position = snapshot?.positions.find((p) => p.ticker === ticker);
 
-  const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [side, setSide] = useState<"buy" | "sell" | "short" | "cover">("buy");
   const [qty, setQty] = useState<string>("");
   const [stopLoss, setStopLoss] = useState<string>("");
   const [takeProfit, setTakeProfit] = useState<string>("");
@@ -39,25 +39,47 @@ export default function TradeTicket({
   const validQty = Number.isFinite(numQty) && numQty > 0;
   const total = validQty ? numQty * price : 0;
 
+  const isOpening = side === "buy" || side === "short";
+  const isShortSide = side === "short" || side === "cover";
+  const positionMatches = position
+    ? (side === "sell" && position.side === "long") ||
+      (side === "cover" && position.side === "short") ||
+      (side === "buy" && position.side === "long") ||
+      (side === "short" && position.side === "short")
+    : isOpening;
+  const wrongSidePosition = position && !positionMatches;
+
   const maxBuy = price > 0 ? Math.floor((cash / price) * 100) / 100 : 0;
-  const maxSell = position ? Number(position.shares) : 0;
+  // For shorts, margin is 50% of position value
+  const maxShort = price > 0 ? Math.floor((cash / (price * 0.5)) * 100) / 100 : 0;
+  const maxClose = position ? Number(position.shares) : 0;
 
   const insufficientFunds = side === "buy" && validQty && total > cash;
-  const insufficientShares = side === "sell" && validQty && numQty > maxSell;
+  const insufficientMargin = side === "short" && validQty && total * 0.5 > cash;
+  const insufficientShares =
+    (side === "sell" || side === "cover") &&
+    validQty &&
+    numQty > maxClose;
   const accountInactive = account && account.status !== "active";
 
-  // Risk math for SL
+  // Risk math for SL — direction depends on side
+  // For longs (buy): stop below entry, target above
+  // For shorts: stop above entry, target below
   const slNum = parseFloat(stopLoss);
   const tpNum = parseFloat(takeProfit);
-  const slValid = Number.isFinite(slNum) && slNum > 0 && slNum < price;
-  const tpValid = Number.isFinite(tpNum) && tpNum > 0 && tpNum > price;
+  const slValid = isShortSide
+    ? Number.isFinite(slNum) && slNum > price
+    : Number.isFinite(slNum) && slNum > 0 && slNum < price;
+  const tpValid = isShortSide
+    ? Number.isFinite(tpNum) && tpNum > 0 && tpNum < price
+    : Number.isFinite(tpNum) && tpNum > 0 && tpNum > price;
   const slInvalid = stopLoss.length > 0 && !slValid;
   const tpInvalid = takeProfit.length > 0 && !tpValid;
 
-  const riskPerShare = slValid ? price - slNum : 0;
+  const riskPerShare = slValid ? Math.abs(slNum - price) : 0;
   const totalRisk = riskPerShare * (validQty ? numQty : 0);
   const riskPctOfAccount = totalRisk > 0 && account ? (totalRisk / Number(account.starting_cash)) * 100 : 0;
-  const rewardPerShare = tpValid ? tpNum - price : 0;
+  const rewardPerShare = tpValid ? Math.abs(price - tpNum) : 0;
   const totalReward = rewardPerShare * (validQty ? numQty : 0);
   const rrRatio = riskPerShare > 0 && rewardPerShare > 0 ? rewardPerShare / riskPerShare : null;
 
@@ -65,7 +87,9 @@ export default function TradeTicket({
     !!account &&
     validQty &&
     !insufficientFunds &&
+    !insufficientMargin &&
     !insufficientShares &&
+    !wrongSidePosition &&
     !accountInactive &&
     !slInvalid &&
     !tpInvalid &&
@@ -79,7 +103,7 @@ export default function TradeTicket({
     fd.set("accountId", account.id);
     fd.set("ticker", ticker);
     fd.set("qty", String(numQty));
-    if (side === "buy") {
+    if (isOpening) {
       if (slValid) fd.set("stopLoss", String(slNum));
       if (tpValid) fd.set("takeProfit", String(tpNum));
     }
@@ -87,7 +111,14 @@ export default function TradeTicket({
     if (strategyId) fd.set("strategyId", strategyId);
     if (isTraining) fd.set("isTraining", "true");
     startTransition(async () => {
-      const action = side === "buy" ? buyAction : sellAction;
+      const action =
+        side === "buy"
+          ? buyAction
+          : side === "sell"
+          ? sellAction
+          : side === "short"
+          ? shortAction
+          : coverAction;
       const res = await action(fd);
       if (res?.error) setError(res.error);
       if (res?.success) {
@@ -111,16 +142,25 @@ export default function TradeTicket({
         { label: "Max", value: max },
       ];
     }
+    if (side === "short") {
+      const max = maxShort;
+      return [
+        { label: "25%", value: Math.floor((max * 0.25) * 100) / 100 },
+        { label: "50%", value: Math.floor((max * 0.5) * 100) / 100 },
+        { label: "Max", value: max },
+      ];
+    }
+    // sell or cover
     return [
-      { label: "25%", value: Math.floor((maxSell * 0.25) * 10000) / 10000 },
-      { label: "50%", value: Math.floor((maxSell * 0.5) * 10000) / 10000 },
-      { label: "All", value: maxSell },
+      { label: "25%", value: Math.floor((maxClose * 0.25) * 10000) / 10000 },
+      { label: "50%", value: Math.floor((maxClose * 0.5) * 10000) / 10000 },
+      { label: "All", value: maxClose },
     ];
-  }, [side, maxBuy, maxSell]);
+  }, [side, maxBuy, maxShort, maxClose]);
 
-  // Debounced brain scoring — only on buy with valid qty/price
+  // Debounced brain scoring — on opening trades only
   useEffect(() => {
-    if (side !== "buy" || !validQty || !account || price <= 0) {
+    if (!isOpening || !validQty || !account || price <= 0) {
       setScore(null);
       return;
     }
@@ -132,7 +172,7 @@ export default function TradeTicket({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             ticker,
-            side: "buy",
+            side,
             shares: numQty,
             price,
             stopLoss: slValid ? slNum : null,
@@ -154,12 +194,12 @@ export default function TradeTicket({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [side, ticker, numQty, price, slValid ? slNum : 0, tpValid ? tpNum : 0]);
 
-  // Auto-size by risk %: needs a stop loss
+  // Auto-size by risk %: needs a stop loss (works for both long and short)
   const autoSize = (riskPct: number) => {
     if (!slValid || !account) return;
     const accountValue = Number(account.starting_cash);
     const riskDollars = (accountValue * riskPct) / 100;
-    const stopDist = price - slNum;
+    const stopDist = Math.abs(slNum - price);
     if (stopDist <= 0) return;
     const computedShares = Math.floor((riskDollars / stopDist) * 100) / 100;
     if (computedShares > 0) setQty(String(computedShares));
@@ -175,11 +215,11 @@ export default function TradeTicket({
 
   return (
     <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5">
-      <div className="flex gap-1 p-1 bg-[var(--color-bg)] rounded-md mb-4">
+      <div className="grid grid-cols-2 gap-1 p-1 bg-[var(--color-bg)] rounded-md mb-3">
         <button
           onClick={() => setSide("buy")}
           className={cn(
-            "flex-1 py-1.5 text-sm font-medium rounded transition-colors",
+            "py-1.5 text-sm font-medium rounded transition-colors",
             side === "buy"
               ? "bg-[var(--color-up)] text-black"
               : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
@@ -190,7 +230,7 @@ export default function TradeTicket({
         <button
           onClick={() => setSide("sell")}
           className={cn(
-            "flex-1 py-1.5 text-sm font-medium rounded transition-colors",
+            "py-1.5 text-sm font-medium rounded transition-colors",
             side === "sell"
               ? "bg-[var(--color-down)] text-black"
               : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
@@ -199,13 +239,41 @@ export default function TradeTicket({
           Sell
         </button>
       </div>
+      <div className="grid grid-cols-2 gap-1 p-1 bg-[var(--color-bg)] rounded-md mb-4">
+        <button
+          onClick={() => setSide("short")}
+          className={cn(
+            "py-1.5 text-xs font-medium uppercase tracking-wider rounded transition-colors",
+            side === "short"
+              ? "bg-[var(--color-down)] text-black"
+              : "text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)]"
+          )}
+        >
+          Short
+        </button>
+        <button
+          onClick={() => setSide("cover")}
+          className={cn(
+            "py-1.5 text-xs font-medium uppercase tracking-wider rounded transition-colors",
+            side === "cover"
+              ? "bg-[var(--color-up)] text-black"
+              : "text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)]"
+          )}
+        >
+          Cover
+        </button>
+      </div>
 
       <div className="space-y-3">
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">Shares</label>
             <div className="text-[11px] text-[var(--color-text-faint)]">
-              {side === "buy" ? `Max ${maxBuy.toFixed(2)}` : `Have ${maxSell}`}
+              {side === "buy"
+                ? `Max ${maxBuy.toFixed(2)}`
+                : side === "short"
+                ? `Max ${maxShort.toFixed(2)}`
+                : `Have ${maxClose}`}
             </div>
           </div>
           <input
@@ -231,8 +299,8 @@ export default function TradeTicket({
           </div>
         </div>
 
-        {/* Bracket orders — only on buy */}
-        {side === "buy" && (
+        {/* Bracket orders — on opening trades (buy or short) */}
+        {isOpening && (
           <div>
             <button
               type="button"
@@ -250,7 +318,7 @@ export default function TradeTicket({
                     label="Stop"
                     value={stopLoss}
                     onChange={setStopLoss}
-                    placeholder={`< ${price.toFixed(2)}`}
+                    placeholder={isShortSide ? `> ${price.toFixed(2)}` : `< ${price.toFixed(2)}`}
                     color="down"
                     invalid={slInvalid}
                   />
@@ -259,7 +327,7 @@ export default function TradeTicket({
                     label="Target"
                     value={takeProfit}
                     onChange={setTakeProfit}
-                    placeholder={`> ${price.toFixed(2)}`}
+                    placeholder={isShortSide ? `< ${price.toFixed(2)}` : `> ${price.toFixed(2)}`}
                     color="up"
                     invalid={tpInvalid}
                   />
@@ -376,9 +444,18 @@ export default function TradeTicket({
           <Row label="Buying power" value={money(cash)} muted />
         </div>
 
-        {/* Brain score card — only on buy with valid qty */}
-        {side === "buy" && validQty && (
+        {/* Brain score card — on opening trades only */}
+        {isOpening && validQty && (
           <ScoreCard score={score} loading={scoreLoading} />
+        )}
+
+        {wrongSidePosition && position && (
+          <div className="text-xs text-[var(--color-pro)] bg-[var(--color-pro)]/10 border border-[var(--color-pro)]/30 rounded-md px-3 py-2">
+            You're {position.side} {ticker}.{" "}
+            {position.side === "long"
+              ? "Use Sell or Cover from another ticker first."
+              : "Use Cover or Buy on a different ticker first."}
+          </div>
         )}
 
         <button
@@ -387,8 +464,8 @@ export default function TradeTicket({
           className={cn(
             "w-full h-11 rounded-md font-medium text-sm transition-colors",
             (!canSubmit || pending) && "bg-[var(--color-surface-2)] text-[var(--color-text-faint)] cursor-not-allowed",
-            canSubmit && !pending && side === "buy" && "bg-[var(--color-up)] text-black hover:opacity-90",
-            canSubmit && !pending && side === "sell" && "bg-[var(--color-down)] text-black hover:opacity-90"
+            canSubmit && !pending && (side === "buy" || side === "cover") && "bg-[var(--color-up)] text-black hover:opacity-90",
+            canSubmit && !pending && (side === "sell" || side === "short") && "bg-[var(--color-down)] text-black hover:opacity-90"
           )}
         >
           {pending
@@ -397,13 +474,25 @@ export default function TradeTicket({
             ? `Account ${account.status}`
             : insufficientFunds
             ? "Not enough cash"
+            : insufficientMargin
+            ? "Not enough margin (need 50%)"
             : insufficientShares
             ? "Not enough shares"
+            : wrongSidePosition
+            ? "Wrong side"
             : slInvalid
             ? "Invalid stop"
             : tpInvalid
             ? "Invalid target"
-            : `${side === "buy" ? "Buy" : "Sell"} ${ticker}`}
+            : `${
+                side === "buy"
+                  ? "Buy"
+                  : side === "sell"
+                  ? "Sell"
+                  : side === "short"
+                  ? "Short"
+                  : "Cover"
+              } ${ticker}`}
         </button>
 
         {error && (

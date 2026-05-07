@@ -70,16 +70,17 @@ async function snapshotEquity(
   if (!account) return;
   const { data: positions } = await sb
     .from("positions")
-    .select("ticker, shares, avg_cost")
+    .select("ticker, shares, avg_cost, side")
     .eq("account_id", accountId);
   const tickers = (positions ?? []).map((p) => (p as { ticker: string }).ticker);
   let positionsValue = 0;
   if (tickers.length > 0) {
     const quotes = await getQuotes(tickers);
     positionsValue = (positions ?? []).reduce((acc, p) => {
-      const r = p as { ticker: string; shares: number; avg_cost: number };
+      const r = p as { ticker: string; shares: number; avg_cost: number; side: "long" | "short" };
       const px = quotes[r.ticker]?.price ?? Number(r.avg_cost);
-      return acc + Number(r.shares) * px;
+      const v = Number(r.shares) * px;
+      return r.side === "short" ? acc - v : acc + v;
     }, 0);
   }
   const cash = Number((account as { cash: number }).cash);
@@ -129,7 +130,10 @@ async function applySell(opts: {
     .eq("ticker", ticker)
     .maybeSingle();
   if (!pos) throw new Error(`No position in ${ticker}`);
-  const position = pos as { shares: number; avg_cost: number };
+  const position = pos as { shares: number; avg_cost: number; side: "long" | "short" };
+  if (position.side !== "long") {
+    throw new Error(`${ticker} is a short position — use Cover, not Sell`);
+  }
   if (qty > Number(position.shares) + 1e-6) {
     throw new Error(`Only have ${position.shares} shares`);
   }
@@ -334,6 +338,10 @@ export async function buy(formData: FormData) {
     .eq("ticker", ticker)
     .maybeSingle();
 
+  if (existing && (existing as { side: string }).side === "short") {
+    return { error: `You're short ${ticker}. Cover first before going long.` };
+  }
+
   if (existing) {
     const ex = existing as { shares: number; avg_cost: number };
     const newShares = Number(ex.shares) + qty;
@@ -354,6 +362,7 @@ export async function buy(formData: FormData) {
       avg_cost: quote.price,
       stop_loss: stopLoss,
       take_profit: takeProfit,
+      side: "long",
     });
   }
 
@@ -458,6 +467,354 @@ export async function sell(formData: FormData) {
     };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Sell failed" };
+  }
+}
+
+// =============================================================================
+// SHORT SELLING — open and cover
+// =============================================================================
+
+export async function shortOpen(formData: FormData) {
+  const accountId = String(formData.get("accountId") ?? "");
+  const ticker = String(formData.get("ticker") ?? "").toUpperCase();
+  const qty = Number(formData.get("qty"));
+  const stopLossRaw = formData.get("stopLoss");
+  const takeProfitRaw = formData.get("takeProfit");
+  const notes = String(formData.get("notes") ?? "").trim() || null;
+  const strategyId = String(formData.get("strategyId") ?? "").trim() || null;
+  const isTraining = formData.get("isTraining") === "true";
+  const stopLoss = stopLossRaw ? Number(stopLossRaw) : null;
+  const takeProfit = takeProfitRaw ? Number(takeProfitRaw) : null;
+
+  if (!accountId || !ticker || !Number.isFinite(qty) || qty <= 0) {
+    return { error: "Invalid input" };
+  }
+
+  const { sb, user, account } = await requireAccount(accountId);
+
+  if (account.status !== "active") {
+    return { error: `Account is ${account.status}, can't trade` };
+  }
+  if (account.cooldown_until && new Date(account.cooldown_until).getTime() > Date.now()) {
+    const remaining = Math.ceil(
+      (new Date(account.cooldown_until).getTime() - Date.now()) / 60000
+    );
+    return { error: `Cooldown active — ${remaining} min remaining. Take a breath.` };
+  }
+
+  const quote = await getQuote(ticker).catch(() => null);
+  if (!quote || !quote.price) return { error: `Couldn't get a price for ${ticker}` };
+
+  // For shorts: stop must be ABOVE entry, target BELOW
+  if (stopLoss != null && stopLoss <= quote.price) {
+    return { error: `Stop loss must be above the current price ($${quote.price.toFixed(2)}) on a short` };
+  }
+  if (takeProfit != null && takeProfit >= quote.price) {
+    return { error: `Take profit must be below the current price ($${quote.price.toFixed(2)}) on a short` };
+  }
+
+  const proceeds = qty * quote.price;
+  // Margin requirement (simplified): need 50% buying power
+  const marginRequired = proceeds * 0.5;
+  if (marginRequired > Number(account.cash) + 1e-6) {
+    return { error: `Need $${marginRequired.toFixed(2)} buying power to short (50% of $${proceeds.toFixed(2)})` };
+  }
+
+  const { data: existing } = await sb
+    .from("positions")
+    .select("*")
+    .eq("account_id", accountId)
+    .eq("ticker", ticker)
+    .maybeSingle();
+
+  if (existing && (existing as { side: string }).side === "long") {
+    return { error: `You're long ${ticker}. Sell first before shorting.` };
+  }
+
+  if (existing) {
+    const ex = existing as { shares: number; avg_cost: number };
+    const newShares = Number(ex.shares) + qty;
+    const newCost = (Number(ex.shares) * Number(ex.avg_cost) + qty * quote.price) / newShares;
+    const update: Record<string, unknown> = { shares: newShares, avg_cost: newCost };
+    if (stopLoss != null) update.stop_loss = stopLoss;
+    if (takeProfit != null) update.take_profit = takeProfit;
+    await sb
+      .from("positions")
+      .update(update)
+      .eq("account_id", accountId)
+      .eq("ticker", ticker);
+  } else {
+    await sb.from("positions").insert({
+      account_id: accountId,
+      ticker,
+      shares: qty,
+      avg_cost: quote.price,
+      stop_loss: stopLoss,
+      take_profit: takeProfit,
+      side: "short",
+    });
+  }
+
+  await sb.from("trades").insert({
+    account_id: accountId,
+    ticker,
+    side: "short",
+    shares: qty,
+    price: quote.price,
+    total: proceeds,
+    notes,
+    triggered_by: "manual",
+    strategy_id: strategyId,
+    is_training: isTraining,
+  });
+
+  // Cash gets the proceeds; margin is implicitly held against the short
+  const today = new Date().toISOString().slice(0, 10);
+  const isNewDay = account.last_trading_date !== today;
+  await sb
+    .from("accounts")
+    .update({
+      cash: Number(account.cash) + proceeds,
+      last_trading_date: today,
+      trading_days_count: isNewDay
+        ? Number(account.trading_days_count) + 1
+        : account.trading_days_count,
+    })
+    .eq("id", accountId);
+
+  await snapshotEquity(sb, accountId);
+
+  if (stopLoss != null) await markChallenge(sb, user.id, "use_stop", "completed");
+  if (takeProfit != null) await markChallenge(sb, user.id, "set_target", "completed");
+
+  revalidatePath("/", "layout");
+  return { success: `Shorted ${qty} ${ticker} @ $${quote.price.toFixed(2)}` };
+}
+
+async function applyCover(opts: {
+  sb: Awaited<ReturnType<typeof createClient>>;
+  user: { id: string };
+  account: AccountRow;
+  ticker: string;
+  qty: number;
+  price: number;
+  triggeredBy: "manual" | "stop" | "target" | "eval_failed";
+  notes?: string;
+  strategyId?: string | null;
+  isTraining?: boolean;
+}) {
+  const { sb, user, account, ticker, qty, price, triggeredBy } = opts;
+
+  const { data: pos } = await sb
+    .from("positions")
+    .select("*")
+    .eq("account_id", account.id)
+    .eq("ticker", ticker)
+    .maybeSingle();
+  if (!pos) throw new Error(`No short position in ${ticker}`);
+  const position = pos as { shares: number; avg_cost: number; side: "long" | "short" };
+  if (position.side !== "short") {
+    throw new Error(`${ticker} is a long position — use Sell, not Cover`);
+  }
+  if (qty > Number(position.shares) + 1e-6) {
+    throw new Error(`Only short ${position.shares} shares`);
+  }
+
+  const cost = qty * price;
+  // Short P&L: profit when price falls (entry - cover)
+  const realizedPnl = qty * (Number(position.avg_cost) - price);
+  const remainShares = Number(position.shares) - qty;
+
+  if (remainShares < 1e-6) {
+    await sb.from("positions").delete().eq("account_id", account.id).eq("ticker", ticker);
+  } else {
+    await sb
+      .from("positions")
+      .update({ shares: remainShares })
+      .eq("account_id", account.id)
+      .eq("ticker", ticker);
+  }
+
+  await sb.from("trades").insert({
+    account_id: account.id,
+    ticker,
+    side: "cover",
+    shares: qty,
+    price,
+    total: cost,
+    realized_pnl: realizedPnl,
+    triggered_by: triggeredBy,
+    notes: opts.notes ?? null,
+    strategy_id: opts.strategyId ?? null,
+    is_training: opts.isTraining ?? false,
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const isNewDay = account.last_trading_date !== today;
+  const newCash = Number(account.cash) - cost;
+
+  // Compute new equity (long contributes +shares*price, short contributes -shares*price)
+  const { data: remainingPositions } = await sb
+    .from("positions")
+    .select("ticker, shares, avg_cost, side")
+    .eq("account_id", account.id);
+  const remTickers = (remainingPositions ?? []).map((r) => (r as { ticker: string }).ticker);
+  let positionsValue = 0;
+  if (remTickers.length > 0) {
+    const quotes = await getQuotes(remTickers);
+    positionsValue = (remainingPositions ?? []).reduce((acc, p) => {
+      const r = p as { ticker: string; shares: number; avg_cost: number; side: "long" | "short" };
+      const px = quotes[r.ticker]?.price ?? Number(r.avg_cost);
+      const value = Number(r.shares) * px;
+      return r.side === "short" ? acc - value : acc + value;
+    }, 0);
+  }
+  // For shorts: short obligation reduces equity. We add the short's "credit" (avg_cost*shares received as cash, but we owe shares back)
+  // The net effect: equity = cash - (short_shares * current_price)
+  // Since cash already includes the proceeds, and positionsValue subtracts current short value, this works out.
+  const shortCredit = (remainingPositions ?? []).reduce((acc, p) => {
+    const r = p as { shares: number; avg_cost: number; side: "long" | "short" };
+    return r.side === "short" ? acc + Number(r.shares) * Number(r.avg_cost) : acc;
+  }, 0);
+  const newEquity = newCash + positionsValue + shortCredit;
+  const newHWM = Math.max(Number(account.high_water_mark), newEquity);
+
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const { data: snap } = await sb
+    .from("equity_snapshots")
+    .select("equity")
+    .eq("account_id", account.id)
+    .lt("recorded_at", todayStart.toISOString())
+    .order("recorded_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const yesterdayClose = snap ? Number((snap as { equity: number }).equity) : null;
+
+  const evalStatus = computeEvalStatus({
+    tier: account.tier as Tier,
+    startingCash: Number(account.starting_cash),
+    currentEquity: newEquity,
+    highWaterMark: newHWM,
+    tradingDays: isNewDay ? Number(account.trading_days_count) + 1 : Number(account.trading_days_count),
+    yesterdayClose,
+  });
+
+  const updates: Record<string, unknown> = {
+    cash: newCash,
+    high_water_mark: newHWM,
+    last_trading_date: today,
+    trading_days_count: isNewDay
+      ? Number(account.trading_days_count) + 1
+      : account.trading_days_count,
+  };
+
+  let unlockedTier: Tier | null = null;
+  if (evalStatus.status === "passed") {
+    updates.status = "passed";
+    updates.passed_at = new Date().toISOString();
+    const nt = nextTier(account.tier as Tier);
+    if (nt) {
+      const { data: profile } = await sb
+        .from("profiles")
+        .select("highest_tier_unlocked")
+        .eq("id", user.id)
+        .single();
+      const currentHighest =
+        (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
+      if (TIER_ORDER.indexOf(nt) > TIER_ORDER.indexOf(currentHighest)) {
+        await sb.from("profiles").update({ highest_tier_unlocked: nt }).eq("id", user.id);
+        unlockedTier = nt;
+      }
+    }
+  } else if (evalStatus.status === "failed") {
+    updates.status = "failed";
+    updates.failed_at = new Date().toISOString();
+    updates.failure_reason = evalStatus.failureReason ?? null;
+  }
+
+  if (opts.triggeredBy === "stop") {
+    const { data: profile } = await sb
+      .from("profiles")
+      .select("cooldown_minutes")
+      .eq("id", user.id)
+      .single();
+    const minutes = (profile as { cooldown_minutes: number | null } | null)?.cooldown_minutes ?? 15;
+    if (minutes > 0) {
+      updates.cooldown_until = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+    }
+  }
+
+  await sb.from("accounts").update(updates).eq("id", account.id);
+  await sb.from("equity_snapshots").insert({
+    account_id: account.id,
+    cash: newCash,
+    positions_value: positionsValue + shortCredit,
+    equity: newEquity,
+  });
+
+  return { realizedPnl, evalStatus, unlockedTier };
+}
+
+export async function cover(formData: FormData) {
+  const accountId = String(formData.get("accountId") ?? "");
+  const ticker = String(formData.get("ticker") ?? "").toUpperCase();
+  const qty = Number(formData.get("qty"));
+  const notes = String(formData.get("notes") ?? "").trim() || undefined;
+  const strategyIdRaw = String(formData.get("strategyId") ?? "").trim();
+  const strategyId = strategyIdRaw.length > 0 ? strategyIdRaw : null;
+  const isTraining = formData.get("isTraining") === "true";
+
+  if (!accountId || !ticker || !Number.isFinite(qty) || qty <= 0) {
+    return { error: "Invalid input" };
+  }
+
+  const { sb, user, account } = await requireAccount(accountId);
+  if (account.status !== "active") {
+    return { error: `Account is ${account.status}, can't trade` };
+  }
+
+  const quote = await getQuote(ticker).catch(() => null);
+  if (!quote || !quote.price) return { error: `Couldn't get a price for ${ticker}` };
+
+  try {
+    const result = await applyCover({
+      sb,
+      user,
+      account: account as AccountRow,
+      ticker,
+      qty,
+      price: quote.price,
+      triggeredBy: "manual",
+      notes,
+      strategyId,
+      isTraining,
+    });
+
+    if (result.realizedPnl > 0) {
+      await markChallenge(sb, user.id, "profitable_close", "completed");
+    }
+
+    revalidatePath("/", "layout");
+    if (result.evalStatus.status === "passed") {
+      return {
+        success: `🎯 Covered ${qty} ${ticker} @ $${quote.price.toFixed(2)} — eval PASSED${
+          result.unlockedTier ? `! ${TIERS[result.unlockedTier].name} unlocked.` : "."
+        }`,
+      };
+    }
+    if (result.evalStatus.status === "failed") {
+      return {
+        error: `Covered ${qty} ${ticker} @ $${quote.price.toFixed(2)} — eval FAILED: ${result.evalStatus.failureReason}`,
+      };
+    }
+    return {
+      success: `Covered ${qty} ${ticker} @ $${quote.price.toFixed(2)} (${
+        result.realizedPnl >= 0 ? "+" : ""
+      }$${result.realizedPnl.toFixed(2)})`,
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Cover failed" };
   }
 }
 
