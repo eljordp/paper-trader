@@ -7,6 +7,8 @@ import { Trophy, Medal, Award } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
+type Period = "all" | "week" | "month";
+
 type LeaderRow = {
   user_id: string;
   display_name: string;
@@ -17,17 +19,34 @@ type LeaderRow = {
   realized_pnl: number;
   trade_count: number;
   win_rate: number | null;
-  return_pct: number;
+  rank_metric: number; // % return for "all", $ realized for week/month
 };
 
-async function fetchLeaderboard(filter: Tier | "all" = "all"): Promise<LeaderRow[]> {
+function periodStart(period: Period): Date | null {
+  if (period === "all") return null;
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  if (period === "week") {
+    // Monday 00:00 UTC current week
+    const day = d.getUTCDay(); // 0=Sun, 1=Mon...
+    const diff = day === 0 ? 6 : day - 1;
+    d.setUTCDate(d.getUTCDate() - diff);
+  } else {
+    d.setUTCDate(d.getUTCDate() - 30);
+  }
+  return d;
+}
+
+async function fetchLeaderboard(
+  filter: Tier | "all" = "all",
+  period: Period = "all"
+): Promise<LeaderRow[]> {
   const sb = adminClient();
 
-  // Pull all accounts with eval rules (Phase 1, Phase 2, Funded), join profiles, aggregate trades
   let query = sb
     .from("accounts")
     .select(
-      "id, user_id, tier, starting_cash, cash, status, profiles!inner(display_name, plan)"
+      "id, user_id, tier, starting_cash, cash, status, profiles!inner(display_name)"
     )
     .in("status", ["active", "passed"]);
   if (filter !== "all") {
@@ -35,16 +54,18 @@ async function fetchLeaderboard(filter: Tier | "all" = "all"): Promise<LeaderRow
   } else {
     query = query.in("tier", ["phase1", "phase2", "pro"]);
   }
-  const { data: accounts } = await query.limit(200);
+  const { data: accounts } = await query.limit(500);
 
   if (!accounts || accounts.length === 0) return [];
 
-  // Aggregate realized P&L + trade count per account
   const accountIds = accounts.map((a) => (a as { id: string }).id);
-  const { data: trades } = await sb
+  let tradesQuery = sb
     .from("trades")
-    .select("account_id, realized_pnl")
+    .select("account_id, realized_pnl, created_at")
     .in("account_id", accountIds);
+  const ps = periodStart(period);
+  if (ps) tradesQuery = tradesQuery.gte("created_at", ps.toISOString());
+  const { data: trades } = await tradesQuery;
 
   const stats: Record<string, { realized: number; total: number; wins: number }> = {};
   ((trades ?? []) as Array<{ account_id: string; realized_pnl: number | null }>).forEach((t) => {
@@ -71,6 +92,7 @@ async function fetchLeaderboard(filter: Tier | "all" = "all"): Promise<LeaderRow
     const startingCash = Number(acc.starting_cash);
     const cash = Number(acc.cash);
     const returnPct = startingCash > 0 ? ((cash - startingCash) / startingCash) * 100 : 0;
+    const rankMetric = period === "all" ? returnPct : s.realized;
     return {
       user_id: acc.user_id,
       display_name: profile?.display_name ?? "anonymous",
@@ -81,50 +103,82 @@ async function fetchLeaderboard(filter: Tier | "all" = "all"): Promise<LeaderRow
       realized_pnl: s.realized,
       trade_count: s.total,
       win_rate: s.total > 0 ? s.wins / s.total : null,
-      return_pct: returnPct,
+      rank_metric: rankMetric,
     };
   });
 
-  // Best account per user (highest return_pct), then sort overall by return_pct
+  // Best account per user (highest rank_metric)
   const bestByUser = new Map<string, LeaderRow>();
   for (const r of rows) {
     const existing = bestByUser.get(r.user_id);
-    if (!existing || r.return_pct > existing.return_pct) {
+    if (!existing || r.rank_metric > existing.rank_metric) {
       bestByUser.set(r.user_id, r);
     }
   }
   return Array.from(bestByUser.values())
-    .sort((a, b) => b.return_pct - a.return_pct)
+    .filter((r) => period === "all" ? true : r.trade_count > 0)
+    .sort((a, b) => b.rank_metric - a.rank_metric)
     .slice(0, 50);
 }
 
 export default async function LeaderboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tier?: string }>;
+  searchParams: Promise<{ tier?: string; period?: string }>;
 }) {
   const sp = await searchParams;
   const filter = ((sp.tier as Tier | "all") ?? "all") as Tier | "all";
-  const rows = await fetchLeaderboard(filter);
+  const period = ((sp.period as Period) ?? "all") as Period;
+  const rows = await fetchLeaderboard(filter, period);
+
+  const periodLabel =
+    period === "week"
+      ? "This week's"
+      : period === "month"
+      ? "Last 30 days"
+      : "All-time";
 
   return (
     <div className="max-w-[1100px] mx-auto px-6 py-8 space-y-8">
       <div>
         <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--color-text-faint)]">
-          Leaderboard
+          {periodLabel} leaderboard
         </div>
         <h1 className="font-serif text-5xl mt-1">Top traders</h1>
         <p className="text-sm text-[var(--color-text-dim)] mt-2 max-w-prose">
-          Ranked by % return on your active eval account. Pass faster, climb higher.
+          {period === "all"
+            ? "Ranked by % return on your active eval account. Pass faster, climb higher."
+            : "Ranked by realized P&L during the period. Resets every Monday."}
         </p>
+      </div>
+
+      {/* Period filter */}
+      <div className="flex flex-wrap gap-2">
+        <PillSet
+          options={[
+            { label: "All time", value: "all" },
+            { label: "This week", value: "week" },
+            { label: "Last 30 days", value: "month" },
+          ]}
+          current={period}
+          paramName="period"
+          otherParams={filter !== "all" ? { tier: filter } : {}}
+        />
       </div>
 
       {/* Tier filter */}
       <div className="flex flex-wrap gap-2">
-        <FilterPill label="All eval tiers" tier="all" current={filter} />
-        <FilterPill label="Phase 1 · $50K" tier="phase1" current={filter} />
-        <FilterPill label="Phase 2 · $100K" tier="phase2" current={filter} />
-        <FilterPill label="Funded · $150K" tier="pro" current={filter} />
+        <PillSet
+          options={[
+            { label: "All eval tiers", value: "all" },
+            { label: "Phase 1 · $50K", value: "phase1" },
+            { label: "Phase 2 · $100K", value: "phase2" },
+            { label: "Funded · $150K", value: "pro" },
+          ]}
+          current={filter}
+          paramName="tier"
+          otherParams={period !== "all" ? { period } : {}}
+        />
       </div>
 
       {rows.length === 0 ? (
@@ -136,12 +190,12 @@ export default async function LeaderboardPage({
         </div>
       ) : (
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-x-auto">
-          <div className="min-w-[640px]">
+          <div className="min-w-[680px]">
             <div className="grid grid-cols-[60px_2fr_1fr_1fr_1fr_1fr] gap-4 px-5 py-3 border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
               <div>Rank</div>
               <div>Trader</div>
               <div>Tier</div>
-              <div className="text-right">Return</div>
+              <div className="text-right">{period === "all" ? "Return" : "P&L"}</div>
               <div className="text-right">Trades</div>
               <div className="text-right">Win rate</div>
             </div>
@@ -149,10 +203,11 @@ export default async function LeaderboardPage({
               const tierCfg = TIERS[r.tier];
               const isPodium = i < 3;
               return (
-                <div
+                <Link
                   key={r.user_id}
+                  href={`/u/${r.user_id}`}
                   className={cn(
-                    "grid grid-cols-[60px_2fr_1fr_1fr_1fr_1fr] gap-4 px-5 py-3.5 border-b border-[var(--color-border)] last:border-b-0 items-center text-sm",
+                    "grid grid-cols-[60px_2fr_1fr_1fr_1fr_1fr] gap-4 px-5 py-3.5 border-b border-[var(--color-border)] last:border-b-0 items-center text-sm hover:bg-[var(--color-surface-2)] transition-colors",
                     isPodium && "bg-gradient-to-r from-[var(--color-pro)]/5 to-transparent"
                   )}
                 >
@@ -190,14 +245,16 @@ export default async function LeaderboardPage({
                   <div
                     className={cn(
                       "text-right tnum font-mono",
-                      r.return_pct > 0
+                      r.rank_metric > 0
                         ? "text-[var(--color-up)]"
-                        : r.return_pct < 0
+                        : r.rank_metric < 0
                         ? "text-[var(--color-down)]"
                         : "text-[var(--color-text-dim)]"
                     )}
                   >
-                    {pct(r.return_pct)}
+                    {period === "all"
+                      ? pct(r.rank_metric)
+                      : `${r.rank_metric >= 0 ? "+" : ""}${money(r.rank_metric, { cents: false })}`}
                   </div>
                   <div className="text-right tnum font-mono text-[var(--color-text-dim)]">
                     {r.trade_count}
@@ -205,7 +262,7 @@ export default async function LeaderboardPage({
                   <div className="text-right tnum font-mono text-[var(--color-text-dim)]">
                     {r.win_rate != null ? `${(r.win_rate * 100).toFixed(0)}%` : "—"}
                   </div>
-                </div>
+                </Link>
               );
             })}
           </div>
@@ -215,28 +272,40 @@ export default async function LeaderboardPage({
   );
 }
 
-function FilterPill({
-  label,
-  tier,
+function PillSet({
+  options,
   current,
+  paramName,
+  otherParams,
 }: {
-  label: string;
-  tier: Tier | "all";
-  current: Tier | "all";
+  options: { label: string; value: string }[];
+  current: string;
+  paramName: string;
+  otherParams: Record<string, string>;
 }) {
-  const active = tier === current;
-  const href = tier === "all" ? "/leaderboard" : `/leaderboard?tier=${tier}`;
   return (
-    <Link
-      href={href}
-      className={cn(
-        "px-3 py-1.5 text-xs uppercase tracking-wider rounded-full transition-colors",
-        active
-          ? "bg-[var(--color-text)] text-[var(--color-bg)] font-medium"
-          : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
-      )}
-    >
-      {label}
-    </Link>
+    <>
+      {options.map((opt) => {
+        const active = opt.value === current;
+        const params = new URLSearchParams(otherParams);
+        if (opt.value !== "all") params.set(paramName, opt.value);
+        const qs = params.toString();
+        const href = `/leaderboard${qs ? `?${qs}` : ""}`;
+        return (
+          <Link
+            key={opt.value}
+            href={href}
+            className={cn(
+              "px-3 py-1.5 text-xs uppercase tracking-wider rounded-full transition-colors",
+              active
+                ? "bg-[var(--color-text)] text-[var(--color-bg)] font-medium"
+                : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)]"
+            )}
+          >
+            {opt.label}
+          </Link>
+        );
+      })}
+    </>
   );
 }
