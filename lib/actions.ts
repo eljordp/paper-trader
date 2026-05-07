@@ -136,7 +136,25 @@ type AccountRow = {
   profit_target_pct: number | null;
   max_drawdown_pct: number | null;
   min_trading_days: number | null;
+  firm_profile: string | null;
+  drawdown_type: "static" | "trailing" | null;
+  profit_target_dollars: number | null;
+  daily_loss_limit_dollars: number | null;
+  max_drawdown_dollars: number | null;
+  trailing_dd_lock_at_dollars: number | null;
 };
+
+function firmRulesFromAccount(account: AccountRow) {
+  if (!account.firm_profile) return null;
+  return {
+    profitTargetDollars: account.profit_target_dollars,
+    dailyLossLimitDollars: account.daily_loss_limit_dollars,
+    maxDrawdownDollars: account.max_drawdown_dollars,
+    drawdownType: (account.drawdown_type ?? "static") as "static" | "trailing",
+    trailingDdLockAtDollars: account.trailing_dd_lock_at_dollars,
+    minTradingDays: account.min_trading_days,
+  };
+}
 
 async function applySell(opts: {
   sb: Awaited<ReturnType<typeof createClient>>;
@@ -243,6 +261,7 @@ async function applySell(opts: {
     highWaterMark: newHWM,
     tradingDays: isNewDay ? Number(account.trading_days_count) + 1 : Number(account.trading_days_count),
     yesterdayClose,
+    firmRules: firmRulesFromAccount(account),
   });
 
   const updates: Record<string, unknown> = {
@@ -258,18 +277,21 @@ async function applySell(opts: {
   if (evalStatus.status === "passed") {
     updates.status = "passed";
     updates.passed_at = new Date().toISOString();
-    const nt = nextTier(account.tier as Tier);
-    if (nt) {
-      const { data: profile } = await sb
-        .from("profiles")
-        .select("highest_tier_unlocked")
-        .eq("id", user.id)
-        .single();
-      const currentHighest =
-        (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
-      if (TIER_ORDER.indexOf(nt) > TIER_ORDER.indexOf(currentHighest)) {
-        await sb.from("profiles").update({ highest_tier_unlocked: nt }).eq("id", user.id);
-        unlockedTier = nt;
+    // Tier unlock only applies to JDLO tier ladder accounts (not firm-profile accounts)
+    if (!account.firm_profile) {
+      const nt = nextTier(account.tier as Tier);
+      if (nt) {
+        const { data: profile } = await sb
+          .from("profiles")
+          .select("highest_tier_unlocked")
+          .eq("id", user.id)
+          .single();
+        const currentHighest =
+          (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
+        if (TIER_ORDER.indexOf(nt) > TIER_ORDER.indexOf(currentHighest)) {
+          await sb.from("profiles").update({ highest_tier_unlocked: nt }).eq("id", user.id);
+          unlockedTier = nt;
+        }
       }
     }
   } else if (evalStatus.status === "failed") {
@@ -788,6 +810,7 @@ async function applyCover(opts: {
     highWaterMark: newHWM,
     tradingDays: isNewDay ? Number(account.trading_days_count) + 1 : Number(account.trading_days_count),
     yesterdayClose,
+    firmRules: firmRulesFromAccount(account),
   });
 
   const updates: Record<string, unknown> = {
@@ -803,18 +826,20 @@ async function applyCover(opts: {
   if (evalStatus.status === "passed") {
     updates.status = "passed";
     updates.passed_at = new Date().toISOString();
-    const nt = nextTier(account.tier as Tier);
-    if (nt) {
-      const { data: profile } = await sb
-        .from("profiles")
-        .select("highest_tier_unlocked")
-        .eq("id", user.id)
-        .single();
-      const currentHighest =
-        (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
-      if (TIER_ORDER.indexOf(nt) > TIER_ORDER.indexOf(currentHighest)) {
-        await sb.from("profiles").update({ highest_tier_unlocked: nt }).eq("id", user.id);
-        unlockedTier = nt;
+    if (!account.firm_profile) {
+      const nt = nextTier(account.tier as Tier);
+      if (nt) {
+        const { data: profile } = await sb
+          .from("profiles")
+          .select("highest_tier_unlocked")
+          .eq("id", user.id)
+          .single();
+        const currentHighest =
+          (profile as { highest_tier_unlocked: Tier } | null)?.highest_tier_unlocked ?? "rookie";
+        if (TIER_ORDER.indexOf(nt) > TIER_ORDER.indexOf(currentHighest)) {
+          await sb.from("profiles").update({ highest_tier_unlocked: nt }).eq("id", user.id);
+          unlockedTier = nt;
+        }
       }
     }
   } else if (evalStatus.status === "failed") {
@@ -1307,6 +1332,59 @@ export async function createTierAccount(tier: Tier) {
     .single();
   if (error) throw error;
 
+  await sb.from("profiles").update({ active_account_id: data.id }).eq("id", user.id);
+  revalidatePath("/", "layout");
+  return data;
+}
+
+export async function createFirmProfileAccount(profileId: string) {
+  const { sb, user } = await requireUser();
+  const { FIRM_PROFILES } = await import("@/lib/firmProfiles");
+  const cfg = FIRM_PROFILES[profileId];
+  if (!cfg) throw new Error("Unknown firm profile");
+
+  // Plan gate: firm profiles are a Pro+ feature
+  const { data: profile } = await sb
+    .from("profiles")
+    .select("plan, trial_until, pro_until, is_pro")
+    .eq("id", user.id)
+    .single();
+  const { effectivePlan, PLANS } = await import("@/lib/plans");
+  const plan = effectivePlan(profile ?? {});
+  if (plan === "free") {
+    throw new Error(`${cfg.firmDisplay} eval profiles require Pro. Upgrade at /pro.`);
+  }
+
+  // Use a tier that matches the size — Phase 2 profile ($100K), Phase 1 ($50K), Funded ($150K), or rookie
+  // For firm profiles we just use 'phase1' as the base tier (it has eval-style display)
+  const tier = "phase1";
+
+  const insert = {
+    user_id: user.id,
+    name: cfg.displayName,
+    tier,
+    starting_cash: cfg.startingCash,
+    cash: cfg.startingCash,
+    high_water_mark: cfg.startingCash,
+    profit_target_pct: (cfg.profitTargetDollars / cfg.startingCash) * 100,
+    daily_loss_limit_pct:
+      cfg.dailyLossLimitDollars != null
+        ? (cfg.dailyLossLimitDollars / cfg.startingCash) * 100
+        : null,
+    max_drawdown_pct: (cfg.maxDrawdownDollars / cfg.startingCash) * 100,
+    min_trading_days: cfg.minTradingDays,
+    firm_profile: cfg.id,
+    drawdown_type: cfg.drawdownType,
+    consistency_rule_pct: cfg.consistencyRulePct,
+    no_overnight: cfg.noOvernight,
+    profit_target_dollars: cfg.profitTargetDollars,
+    daily_loss_limit_dollars: cfg.dailyLossLimitDollars,
+    max_drawdown_dollars: cfg.maxDrawdownDollars,
+    trailing_dd_lock_at_dollars: cfg.trailingDdLockAtDollars,
+  };
+
+  const { data, error } = await sb.from("accounts").insert(insert).select().single();
+  if (error) throw error;
   await sb.from("profiles").update({ active_account_id: data.id }).eq("id", user.id);
   revalidatePath("/", "layout");
   return data;

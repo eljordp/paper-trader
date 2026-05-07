@@ -143,12 +143,49 @@ export function computeEvalStatus(opts: {
   tradingDays: number;
   /** Equity at last UTC midnight (null if first day). */
   yesterdayClose?: number | null;
+  /** Firm profile overrides (when account.firm_profile is set) */
+  firmRules?: {
+    profitTargetDollars: number | null;
+    dailyLossLimitDollars: number | null;
+    maxDrawdownDollars: number | null;
+    drawdownType: "static" | "trailing";
+    trailingDdLockAtDollars: number | null;
+    minTradingDays: number | null;
+  } | null;
 }): EvalStatus {
+  // Firm-profile rules override tier defaults when present
+  const fr = opts.firmRules ?? null;
   const tier = TIERS[opts.tier];
-  const { profitTargetPct, dailyLossLimitPct, maxDrawdownPct, minTradingDays } = tier.rules;
+
+  // Resolve target/loss/dd in % terms (so existing UI works), preferring dollar-based when set
+  const profitTargetPct =
+    fr?.profitTargetDollars != null
+      ? (fr.profitTargetDollars / opts.startingCash) * 100
+      : tier.rules.profitTargetPct;
+  const dailyLossLimitPct =
+    fr?.dailyLossLimitDollars != null
+      ? (fr.dailyLossLimitDollars / opts.startingCash) * 100
+      : tier.rules.dailyLossLimitPct;
+  const maxDrawdownPct =
+    fr?.maxDrawdownDollars != null
+      ? (fr.maxDrawdownDollars / opts.startingCash) * 100
+      : tier.rules.maxDrawdownPct;
+  const minTradingDays = fr?.minTradingDays ?? tier.rules.minTradingDays;
 
   const profitPct = ((opts.currentEquity - opts.startingCash) / opts.startingCash) * 100;
-  const drawdownPct = ((opts.startingCash - opts.currentEquity) / opts.startingCash) * 100;
+
+  // Drawdown calculation: static vs trailing
+  let drawdownPct: number;
+  if (fr?.drawdownType === "trailing" && fr.maxDrawdownDollars != null) {
+    // Trailing DD threshold = HWM - maxDD (with optional lock at trailingDdLockAtDollars)
+    const lockAt = fr.trailingDdLockAtDollars;
+    const effectiveHwm = lockAt != null ? Math.min(opts.highWaterMark, lockAt) : opts.highWaterMark;
+    const ddThreshold = effectiveHwm - fr.maxDrawdownDollars;
+    const drawdownDollars = ddThreshold - opts.currentEquity;
+    drawdownPct = (drawdownDollars / opts.startingCash) * 100;
+  } else {
+    drawdownPct = ((opts.startingCash - opts.currentEquity) / opts.startingCash) * 100;
+  }
 
   // Daily loss limit (most common eval failure)
   if (dailyLossLimitPct != null && opts.yesterdayClose != null) {

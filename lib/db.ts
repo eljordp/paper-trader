@@ -23,6 +23,14 @@ export type DBAccount = {
   passed_at: string | null;
   failed_at: string | null;
   cooldown_until: string | null;
+  firm_profile: string | null;
+  drawdown_type: "static" | "trailing" | null;
+  consistency_rule_pct: number | null;
+  no_overnight: boolean | null;
+  profit_target_dollars: number | null;
+  daily_loss_limit_dollars: number | null;
+  max_drawdown_dollars: number | null;
+  trailing_dd_lock_at_dollars: number | null;
   created_at: string;
 };
 
