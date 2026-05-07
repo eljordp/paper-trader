@@ -4,6 +4,7 @@ import { money, pct } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import Link from "next/link";
 import { Trophy, Medal, Award } from "lucide-react";
+import Avatar from "@/components/Avatar";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,7 @@ type Period = "all" | "week" | "month";
 type LeaderRow = {
   user_id: string;
   display_name: string;
+  avatar_url: string | null;
   tier: Tier;
   starting_cash: number;
   cash: number;
@@ -46,7 +48,7 @@ async function fetchLeaderboard(
   let query = sb
     .from("accounts")
     .select(
-      "id, user_id, tier, starting_cash, cash, status, profiles!inner(display_name)"
+      "id, user_id, tier, starting_cash, cash, status, profiles!inner(display_name, avatar_url)"
     )
     .in("status", ["active", "passed"]);
   if (filter !== "all") {
@@ -85,7 +87,9 @@ async function fetchLeaderboard(
       starting_cash: number;
       cash: number;
       status: string;
-      profiles: { display_name: string | null } | { display_name: string | null }[];
+      profiles:
+        | { display_name: string | null; avatar_url: string | null }
+        | { display_name: string | null; avatar_url: string | null }[];
     };
     const profile = Array.isArray(acc.profiles) ? acc.profiles[0] : acc.profiles;
     const s = stats[acc.id] ?? { realized: 0, total: 0, wins: 0 };
@@ -96,6 +100,7 @@ async function fetchLeaderboard(
     return {
       user_id: acc.user_id,
       display_name: profile?.display_name ?? "anonymous",
+      avatar_url: profile?.avatar_url ?? null,
       tier: acc.tier,
       starting_cash: startingCash,
       cash,
@@ -224,7 +229,10 @@ export default async function LeaderboardPage({
                       {i + 1}
                     </span>
                   </div>
-                  <div className="font-mono">{r.display_name}</div>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Avatar name={r.display_name} src={r.avatar_url} size={28} />
+                    <span className="font-mono truncate">{r.display_name}</span>
+                  </div>
                   <div>
                     <span
                       className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded"

@@ -12,6 +12,7 @@ import { signOut } from "@/lib/actions";
 import { LogOut, Sparkles, Clock, Shield } from "lucide-react";
 import { effectivePlan, isTrialActive, trialDaysRemaining } from "@/lib/plans";
 import { highestRole, isAdmin, ROLES } from "@/lib/roles";
+import Avatar from "./Avatar";
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -202,16 +203,36 @@ export default function Nav() {
           );
         })()}
 
-        {isAuth ? (
-          <form action={signOut}>
-            <button
-              type="submit"
-              className="text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] p-1.5"
-              title="Sign out"
+        {isAuth && snapshot ? (
+          <div className="flex items-center gap-1.5">
+            <Link
+              href={`/u/${snapshot.profile.id}`}
+              className="hover:opacity-80 transition-opacity"
+              title="Your profile"
             >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </form>
+              <Avatar
+                name={snapshot.profile.display_name ?? "trader"}
+                src={snapshot.profile.avatar_url}
+                size={30}
+              />
+            </Link>
+            <Link
+              href="/settings"
+              className="text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] p-1.5 hidden sm:inline-flex"
+              title="Settings"
+            >
+              <Shield className="w-4 h-4" />
+            </Link>
+            <form action={signOut}>
+              <button
+                type="submit"
+                className="text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] p-1.5"
+                title="Sign out"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </form>
+          </div>
         ) : (
           <Link
             href="/login"

@@ -7,6 +7,8 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Trophy, AlertTriangle } from "lucide-react";
 import ShareButton from "./share-button";
+import Avatar from "@/components/Avatar";
+import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
@@ -20,18 +22,26 @@ export default async function UserProfile({
 
   const { data: profile } = await sb
     .from("profiles")
-    .select("id, display_name, roles, highest_tier_unlocked, plan, created_at")
+    .select("id, display_name, avatar_url, roles, highest_tier_unlocked, plan, created_at")
     .eq("id", id)
     .maybeSingle();
   if (!profile) notFound();
   const p = profile as {
     id: string;
     display_name: string | null;
+    avatar_url: string | null;
     roles: string[] | null;
     highest_tier_unlocked: Tier;
     plan: string | null;
     created_at: string;
   };
+
+  // Is this the current user's own profile?
+  const userClient = await createClient();
+  const {
+    data: { user: currentUser },
+  } = await userClient.auth.getUser();
+  const isOwnProfile = currentUser?.id === p.id;
 
   // All accounts for this user
   const { data: accountsRaw } = await sb
@@ -94,32 +104,45 @@ export default async function UserProfile({
       {/* HEADER */}
       <header className="space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              {(p.roles ?? []).map((r) => {
-                const cfg = ROLES[r as Role];
-                if (!cfg) return null;
-                return (
-                  <span
-                    key={r}
-                    className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded font-medium"
-                    style={{
-                      color: cfg.color,
-                      background: `rgba(${cfg.colorRgb}, 0.12)`,
-                      border: `1px solid rgba(${cfg.colorRgb}, 0.4)`,
-                    }}
-                  >
-                    {cfg.label}
-                  </span>
-                );
-              })}
-            </div>
-            <h1 className="font-serif text-6xl tracking-tight leading-none">{displayName}</h1>
-            <div className="text-sm text-[var(--color-text-dim)]">
-              Trader since {memberSince}
+          <div className="flex items-start gap-5">
+            <Avatar name={displayName} src={p.avatar_url} size={96} ring />
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                {(p.roles ?? []).map((r) => {
+                  const cfg = ROLES[r as Role];
+                  if (!cfg) return null;
+                  return (
+                    <span
+                      key={r}
+                      className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded font-medium"
+                      style={{
+                        color: cfg.color,
+                        background: `rgba(${cfg.colorRgb}, 0.12)`,
+                        border: `1px solid rgba(${cfg.colorRgb}, 0.4)`,
+                      }}
+                    >
+                      {cfg.label}
+                    </span>
+                  );
+                })}
+              </div>
+              <h1 className="font-serif text-6xl tracking-tight leading-none">{displayName}</h1>
+              <div className="text-sm text-[var(--color-text-dim)]">
+                Trader since {memberSince}
+              </div>
             </div>
           </div>
-          <ShareButton displayName={displayName} userId={p.id} />
+          <div className="flex items-center gap-2">
+            {isOwnProfile && (
+              <Link
+                href="/settings"
+                className="inline-flex items-center gap-2 h-10 px-4 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] text-sm transition-colors"
+              >
+                Edit profile
+              </Link>
+            )}
+            <ShareButton displayName={displayName} userId={p.id} />
+          </div>
         </div>
       </header>
 

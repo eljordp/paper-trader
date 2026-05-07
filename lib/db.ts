@@ -65,6 +65,7 @@ export type DBProfile = {
   plan: "free" | "pro" | "vip" | "enterprise";
   trial_until: string | null;
   roles: string[] | null;
+  avatar_url: string | null;
   created_at: string;
 };
 
