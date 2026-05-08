@@ -8,7 +8,8 @@ import NewsList from "@/components/NewsList";
 import StatTile from "@/components/StatTile";
 import { money, pct, compact } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { Star } from "lucide-react";
+import { Star, Clock } from "lucide-react";
+import { dataDelayMinutes, isFuturesSymbol } from "@/lib/instruments";
 import { usePortfolio } from "@/components/PortfolioProvider";
 import { toggleWatchlist } from "@/lib/actions";
 
@@ -76,6 +77,29 @@ export default function TickerClient({ ticker, initialQuote }: { ticker: string;
           <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-faint)]">
             {quote.exchange} · {quote.currency} · {quote.marketState}
           </div>
+          {(() => {
+            const delay = dataDelayMinutes(ticker);
+            const futures = isFuturesSymbol(ticker);
+            if (delay.quote === 0) return null;
+            return (
+              <div
+                className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded mt-1"
+                style={{
+                  background: futures ? "rgba(245, 158, 11, 0.10)" : "rgba(168, 171, 182, 0.08)",
+                  border: futures
+                    ? "1px solid rgba(245, 158, 11, 0.30)"
+                    : "1px solid var(--color-border)",
+                  color: futures ? "var(--color-pro)" : "var(--color-text-dim)",
+                }}
+                title="Free data feeds are delayed. Real-time requires paid exchange data ($30-300/mo)."
+              >
+                <Clock className="w-3 h-3" />
+                {futures
+                  ? `Chart ~${delay.chart}m delay · Quote ~${delay.quote}m delay`
+                  : `Quote ~${delay.quote}m delay`}
+              </div>
+            );
+          })()}
         </div>
       </header>
 

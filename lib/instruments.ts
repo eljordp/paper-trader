@@ -170,6 +170,27 @@ export function displaySymbol(symbol: string): string {
   return symbol;
 }
 
+/**
+ * Approximate data delay for a symbol on our free data feeds.
+ * Yahoo quote: ~15min delayed for everything free
+ * TradingView embed: real-time-ish for major US stocks, 10-15min delayed for futures
+ */
+export function dataDelayMinutes(symbol: string): { chart: number; quote: number } {
+  if (isFuturesSymbol(symbol)) {
+    return { chart: 10, quote: 15 };
+  }
+  if (symbol.endsWith("=X")) {
+    // Forex
+    return { chart: 0, quote: 5 };
+  }
+  if (symbol.endsWith("-USD")) {
+    // Crypto
+    return { chart: 0, quote: 1 };
+  }
+  // Stocks
+  return { chart: 0, quote: 15 };
+}
+
 /** Compute realized P&L given entry, exit, and quantity for a position. */
 export function computeRealizedPnl(opts: {
   side: "long" | "short";
