@@ -8,10 +8,12 @@ import NewsList from "@/components/NewsList";
 import StatTile from "@/components/StatTile";
 import { money, pct, compact } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { Star, Clock } from "lucide-react";
+import { Star, Clock, Zap } from "lucide-react";
 import { dataDelayMinutes, isFuturesSymbol } from "@/lib/instruments";
+import { getEtfMirror } from "@/lib/etfMirrors";
 import { usePortfolio } from "@/components/PortfolioProvider";
 import { toggleWatchlist } from "@/lib/actions";
+import Link from "next/link";
 
 export default function TickerClient({ ticker, initialQuote }: { ticker: string; initialQuote: QuoteData }) {
   const [quote, setQuote] = useState<QuoteData>(initialQuote);
@@ -80,23 +82,41 @@ export default function TickerClient({ ticker, initialQuote }: { ticker: string;
           {(() => {
             const delay = dataDelayMinutes(ticker);
             const futures = isFuturesSymbol(ticker);
+            const etfMirror = futures ? getEtfMirror(ticker) : null;
             if (delay.quote === 0) return null;
             return (
-              <div
-                className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded mt-1"
-                style={{
-                  background: futures ? "rgba(245, 158, 11, 0.10)" : "rgba(168, 171, 182, 0.08)",
-                  border: futures
-                    ? "1px solid rgba(245, 158, 11, 0.30)"
-                    : "1px solid var(--color-border)",
-                  color: futures ? "var(--color-pro)" : "var(--color-text-dim)",
-                }}
-                title="Free data feeds are delayed. Real-time requires paid exchange data ($30-300/mo)."
-              >
-                <Clock className="w-3 h-3" />
-                {futures
-                  ? `Chart ~${delay.chart}m delay · Quote ~${delay.quote}m delay`
-                  : `Quote ~${delay.quote}m delay`}
+              <div className="flex flex-wrap items-center gap-2 mt-1">
+                <span
+                  className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded"
+                  style={{
+                    background: futures ? "rgba(245, 158, 11, 0.10)" : "rgba(168, 171, 182, 0.08)",
+                    border: futures
+                      ? "1px solid rgba(245, 158, 11, 0.30)"
+                      : "1px solid var(--color-border)",
+                    color: futures ? "var(--color-pro)" : "var(--color-text-dim)",
+                  }}
+                  title="Free data feeds are delayed. Real-time requires paid exchange data ($30-300/mo)."
+                >
+                  <Clock className="w-3 h-3" />
+                  {futures
+                    ? `Chart ~${delay.chart}m delay · Quote ~${delay.quote}m delay`
+                    : `Quote ~${delay.quote}m delay`}
+                </span>
+                {etfMirror && (
+                  <Link
+                    href={`/trade/${etfMirror.etf}`}
+                    className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded transition-opacity hover:opacity-80"
+                    style={{
+                      background: "rgba(0, 227, 148, 0.10)",
+                      border: "1px solid rgba(0, 227, 148, 0.30)",
+                      color: "var(--color-up)",
+                    }}
+                    title={`${etfMirror.etfName} mirrors ${etfMirror.futuresName} at ${(etfMirror.correlation * 100).toFixed(0)}% correlation. Real-time, free.`}
+                  >
+                    <Zap className="w-3 h-3" />
+                    Want real-time? Try {etfMirror.etf}
+                  </Link>
+                )}
               </div>
             );
           })()}
