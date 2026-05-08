@@ -1,4 +1,5 @@
 import YahooFinance from "yahoo-finance2";
+import { getFinnhubQuote, getFinnhubQuotes, shouldUseFinnhub } from "./finnhub";
 
 const yahooFinance = new YahooFinance({ suppressNotices: ["yahooSurvey", "ripHistorical"] });
 
@@ -28,21 +29,36 @@ export type QuoteData = {
 };
 
 export async function getQuote(symbol: string): Promise<QuoteData> {
-  // Primary: quote() endpoint
+  // Real-time prefer: Finnhub for stocks/ETFs (NBBO, real-time).
+  // We still fetch Yahoo for metadata (name, P/E, market cap, 52w range, etc) and
+  // overwrite price-sensitive fields with Finnhub when available.
+  const finnhubPromise = shouldUseFinnhub(symbol)
+    ? getFinnhubQuote(symbol)
+    : Promise.resolve(null);
+
+  // Primary: Yahoo quote() endpoint
   try {
-    const q = await yahooFinance.quote(symbol);
+    const [q, fh] = await Promise.all([yahooFinance.quote(symbol), finnhubPromise]);
     if (q && q.regularMarketPrice != null) {
+      // Finnhub overrides for real-time price fields when present
+      const price = fh?.price ?? q.regularMarketPrice ?? 0;
+      const change = fh?.change ?? q.regularMarketChange ?? 0;
+      const changePct = fh?.changePct ?? q.regularMarketChangePercent ?? 0;
+      const prevClose = fh?.prevClose ?? q.regularMarketPreviousClose ?? 0;
+      const open = fh?.open ?? q.regularMarketOpen ?? 0;
+      const dayHigh = fh?.dayHigh ?? q.regularMarketDayHigh ?? 0;
+      const dayLow = fh?.dayLow ?? q.regularMarketDayLow ?? 0;
       return {
         symbol: q.symbol,
         shortName: q.shortName ?? q.symbol,
         longName: q.longName ?? q.shortName ?? q.symbol,
-        price: q.regularMarketPrice ?? 0,
-        change: q.regularMarketChange ?? 0,
-        changePct: q.regularMarketChangePercent ?? 0,
-        prevClose: q.regularMarketPreviousClose ?? 0,
-        open: q.regularMarketOpen ?? 0,
-        dayHigh: q.regularMarketDayHigh ?? 0,
-        dayLow: q.regularMarketDayLow ?? 0,
+        price,
+        change,
+        changePct,
+        prevClose,
+        open,
+        dayHigh,
+        dayLow,
         yearHigh: q.fiftyTwoWeekHigh ?? null,
         yearLow: q.fiftyTwoWeekLow ?? null,
         marketCap: q.marketCap ?? null,
