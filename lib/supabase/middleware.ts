@@ -39,6 +39,7 @@ export async function updateSession(request: NextRequest) {
     path.startsWith("/api/search") ||
     path.startsWith("/api/news") ||
     path.startsWith("/api/movers") ||
+    path.startsWith("/api/cron/") ||
     path === "/api/stripe/webhook";
 
   if (!user && !isPublic) {
