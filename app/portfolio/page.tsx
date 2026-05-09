@@ -56,10 +56,8 @@ export default function PortfolioPage() {
     <div className="max-w-[1400px] mx-auto px-6 py-8 space-y-8">
       <h1 className="font-serif text-5xl">Portfolio</h1>
 
-      <section className="grid grid-cols-2 md:grid-cols-6 gap-px bg-[var(--color-border)] border border-[var(--color-border)] rounded-lg overflow-hidden">
-        <Cell label="Equity" value={money(equity)} />
-        <Cell label="Cash" value={money(cash)} />
-        <Cell label="Invested" value={money(invested)} />
+      <section className="grid grid-cols-2 md:grid-cols-4 gap-px bg-[var(--color-border)] border border-[var(--color-border)] rounded-lg overflow-hidden">
+        <Cell label="Equity" value={money(equity)} sub={`Cash ${money(cash, { cents: false })} + invested ${money(invested, { cents: false })}`} />
         <Cell
           label="P&L (all time)"
           value={(totalPnl >= 0 ? "+" : "") + money(totalPnl)}
@@ -67,13 +65,15 @@ export default function PortfolioPage() {
           color={totalPnl > 0 ? "up" : totalPnl < 0 ? "down" : null}
         />
         <Cell
-          label="Unrealized"
+          label="Open P&L"
           value={(unrealized >= 0 ? "+" : "") + money(unrealized)}
+          sub={`${snapshot.positions.length} ${snapshot.positions.length === 1 ? "position" : "positions"}`}
           color={unrealized > 0 ? "up" : unrealized < 0 ? "down" : null}
         />
         <Cell
-          label="Realized"
+          label="Closed P&L"
           value={(realized >= 0 ? "+" : "") + money(realized)}
+          sub={`${snapshot.trades.length} ${snapshot.trades.length === 1 ? "trade" : "trades"}`}
           color={realized > 0 ? "up" : realized < 0 ? "down" : null}
         />
       </section>

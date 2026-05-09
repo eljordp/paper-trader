@@ -278,26 +278,46 @@ export default function DashboardClient({
           </div>
         )}
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-[var(--color-border)] border border-[var(--color-border)] rounded-lg overflow-hidden">
-          <Stat label="Cash" value={money(cash)} sub={<TermLabel termKey="buyingPower">Buying power</TermLabel>} />
-          <Stat label="Invested" value={money(positionsValue)} sub="In positions" />
-          <Stat
-            label={<TermLabel termKey="unrealizedPnl">Unrealized</TermLabel>}
-            value={(unrealized >= 0 ? "+" : "") + money(unrealized)}
-            valueClass={
-              unrealized > 0 ? "text-[var(--color-up)]" : unrealized < 0 ? "text-[var(--color-down)]" : ""
-            }
-            sub="Open positions"
-          />
-          <Stat
-            label={<TermLabel termKey="realizedPnl">Realized</TermLabel>}
-            value={(realized >= 0 ? "+" : "") + money(realized)}
-            valueClass={
-              realized > 0 ? "text-[var(--color-up)]" : realized < 0 ? "text-[var(--color-down)]" : ""
-            }
-            sub="Closed trades"
-          />
-        </div>
+        {snapshot.trades.length === 0 && snapshot.positions.length === 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-center bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5">
+            <div className="space-y-1">
+              <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
+                You haven&apos;t traded yet
+              </div>
+              <div className="font-serif text-2xl">Place your first trade.</div>
+              <div className="text-sm text-[var(--color-text-dim)]">
+                Search any ticker (top of page) to pull up a chart and trade ticket. SPY, QQQ, NVDA, TSLA — all real prices.
+              </div>
+            </div>
+            <Link
+              href="/trade/SPY"
+              className="inline-flex items-center justify-center gap-2 px-5 h-11 rounded-md bg-[var(--color-text)] text-[var(--color-bg)] text-sm font-medium hover:opacity-90 transition-opacity whitespace-nowrap"
+            >
+              Trade SPY <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-[var(--color-border)] border border-[var(--color-border)] rounded-lg overflow-hidden">
+            <Stat label="Cash" value={money(cash)} sub={<TermLabel termKey="buyingPower">Buying power</TermLabel>} />
+            <Stat label="Invested" value={money(positionsValue)} sub="In positions" />
+            <Stat
+              label={<TermLabel termKey="unrealizedPnl">Unrealized</TermLabel>}
+              value={(unrealized >= 0 ? "+" : "") + money(unrealized)}
+              valueClass={
+                unrealized > 0 ? "text-[var(--color-up)]" : unrealized < 0 ? "text-[var(--color-down)]" : ""
+              }
+              sub="Open positions"
+            />
+            <Stat
+              label={<TermLabel termKey="realizedPnl">Realized</TermLabel>}
+              value={(realized >= 0 ? "+" : "") + money(realized)}
+              valueClass={
+                realized > 0 ? "text-[var(--color-up)]" : realized < 0 ? "text-[var(--color-down)]" : ""
+              }
+              sub="Closed trades"
+            />
+          </div>
+        )}
       </section>
 
       {/* EVAL COACH (only for accounts with eval rules) */}
@@ -307,8 +327,9 @@ export default function DashboardClient({
         </section>
       )}
 
-      {/* DAILY CHALLENGE */}
-      {snapshot.todayChallenge && (
+      {/* DAILY CHALLENGE — only after they've placed at least one trade.
+           First-trade CTA above takes priority for new users. */}
+      {snapshot.todayChallenge && snapshot.trades.length > 0 && (
         <section>
           <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg p-5 flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-4">
@@ -395,33 +416,40 @@ export default function DashboardClient({
         <PositionsTable />
       </section>
 
-      <div className="grid lg:grid-cols-2 gap-8">
-        <section className="space-y-4">
-          <h2 className="font-serif text-3xl">Market movers</h2>
-          {movers ? (
-            <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden">
-              <MoverSection title="Top gainers" items={movers.gainers.slice(0, 5)} />
-              <MoverSection title="Top losers" items={movers.losers.slice(0, 5)} />
-              <MoverSection title="Most active" items={movers.mostActive.slice(0, 5)} />
-            </div>
-          ) : (
-            <div className="text-xs text-[var(--color-text-faint)]">loading movers…</div>
-          )}
-        </section>
+      {(() => {
+        const hasMovers =
+          movers &&
+          (movers.gainers.length > 0 ||
+            movers.losers.length > 0 ||
+            movers.mostActive.length > 0);
+        return (
+          <div className={cn("grid gap-8", hasMovers ? "lg:grid-cols-2" : "")}>
+            {hasMovers && (
+              <section className="space-y-4">
+                <h2 className="font-serif text-3xl">Market movers</h2>
+                <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-hidden">
+                  {movers!.gainers.length > 0 && <MoverSection title="Top gainers" items={movers!.gainers.slice(0, 5)} />}
+                  {movers!.losers.length > 0 && <MoverSection title="Top losers" items={movers!.losers.slice(0, 5)} />}
+                  {movers!.mostActive.length > 0 && <MoverSection title="Most active" items={movers!.mostActive.slice(0, 5)} />}
+                </div>
+              </section>
+            )}
 
-        <section className="space-y-4">
-          <div className="flex items-end justify-between">
-            <h2 className="font-serif text-3xl">Today&apos;s news</h2>
-            <Link
-              href="/news"
-              className="text-xs uppercase tracking-wider text-[var(--color-text-faint)] hover:text-[var(--color-text)] flex items-center gap-1"
-            >
-              View all <ArrowRight className="w-3 h-3" />
-            </Link>
+            <section className="space-y-4">
+              <div className="flex items-end justify-between">
+                <h2 className="font-serif text-3xl">Today&apos;s news</h2>
+                <Link
+                  href="/news"
+                  className="text-xs uppercase tracking-wider text-[var(--color-text-faint)] hover:text-[var(--color-text)] flex items-center gap-1"
+                >
+                  View all <ArrowRight className="w-3 h-3" />
+                </Link>
+              </div>
+              <NewsList limit={6} />
+            </section>
           </div>
-          <NewsList limit={6} />
-        </section>
-      </div>
+        );
+      })()}
     </div>
   );
 }

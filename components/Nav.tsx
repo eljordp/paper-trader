@@ -8,23 +8,26 @@ import { money } from "@/lib/format";
 import { TIERS } from "@/lib/tiers";
 import { cn } from "@/lib/cn";
 import TickerSearch from "./TickerSearch";
-import { signOut } from "@/lib/actions";
-import { LogOut, Sparkles, Clock, Shield } from "lucide-react";
+import { Sparkles, Clock } from "lucide-react";
 import { effectivePlan, isTrialActive, trialDaysRemaining } from "@/lib/plans";
-import { highestRole, hasRole, ROLES } from "@/lib/roles";
-import Avatar from "./Avatar";
 import { getFuturesSpec } from "@/lib/instruments";
+import NavGroup from "./NavGroup";
+import AvatarMenu from "./AvatarMenu";
 
-const links = [
+const primaryLinks = [
   { href: "/", label: "Dashboard" },
   { href: "/portfolio", label: "Portfolio" },
-  { href: "/strategies", label: "Strategies" },
-  { href: "/ai-lab", label: "AI Lab" },
-  { href: "/history", label: "History" },
-  { href: "/watchlist", label: "Watchlist" },
-  { href: "/leaderboard", label: "Leaderboard" },
-  { href: "/news", label: "News" },
-  { href: "/learn", label: "Learn" },
+];
+
+const marketsGroup = [
+  { href: "/watchlist", label: "Watchlist", description: "Tickers you're tracking" },
+  { href: "/news", label: "News", description: "Headlines + ticker mentions" },
+];
+
+const brainGroup = [
+  { href: "/strategies", label: "Strategies", description: "Your playbook + tagged trades" },
+  { href: "/ai-lab", label: "AI Lab", description: "Generate, backtest, and run hypotheses" },
+  { href: "/history", label: "History", description: "Closed trades + reviews" },
 ];
 
 export default function Nav() {
@@ -81,9 +84,13 @@ export default function Nav() {
     changePct = Number(account.starting_cash) > 0 ? (change / Number(account.starting_cash)) * 100 : 0;
   }
 
+  const userPlan = snapshot ? effectivePlan(snapshot.profile) : "free";
+  const trialActive = snapshot ? isTrialActive(snapshot.profile.trial_until) : false;
+  const trialDays = snapshot ? trialDaysRemaining(snapshot.profile.trial_until) : 0;
+
   return (
     <header className="border-b border-[var(--color-border)] bg-[var(--color-bg)] sticky top-0 z-30 backdrop-blur">
-      <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-6">
+      <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center gap-4">
         <Link href="/" className="flex items-baseline gap-2 shrink-0">
           <span className="font-serif text-2xl tracking-tight leading-none">paper</span>
           <span className="font-mono text-xs uppercase tracking-[0.18em] text-[var(--color-text-faint)]">trader</span>
@@ -91,7 +98,7 @@ export default function Nav() {
 
         {isAuth && (
           <nav className="hidden md:flex items-center gap-1">
-            {links.map((l) => (
+            {primaryLinks.map((l) => (
               <Link
                 key={l.href}
                 href={l.href}
@@ -99,12 +106,14 @@ export default function Nav() {
                   "px-3 py-1.5 text-sm rounded-md transition-colors",
                   pathname === l.href
                     ? "text-[var(--color-text)] bg-[var(--color-surface)]"
-                    : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]"
+                    : "text-[var(--color-text-dim)] hover:text-[var(--color-text)]",
                 )}
               >
                 {l.label}
               </Link>
             ))}
+            <NavGroup label="Markets" children={marketsGroup} />
+            <NavGroup label="Brain" children={brainGroup} />
           </nav>
         )}
 
@@ -129,7 +138,7 @@ export default function Nav() {
             <span
               className={cn(
                 "font-mono tnum text-xs",
-                change > 0 ? "text-[var(--color-up)]" : change < 0 ? "text-[var(--color-down)]" : "text-[var(--color-text-dim)]"
+                change > 0 ? "text-[var(--color-up)]" : change < 0 ? "text-[var(--color-down)]" : "text-[var(--color-text-dim)]",
               )}
             >
               {change >= 0 ? "+" : ""}{changePct.toFixed(2)}%
@@ -137,112 +146,33 @@ export default function Nav() {
           </Link>
         )}
 
-        {isAuth && hasRole(snapshot?.profile ?? null, "owner") && (
+        {/* Free → upgrade nudge stays inline (high-intent), trial badge stays inline (urgency).
+            Everything else (plan + role) lives inside the avatar menu. */}
+        {isAuth && trialActive && userPlan === "pro" && snapshot?.profile.plan === "free" && (
           <Link
-            href="/admin"
-            className="hidden md:inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-md transition-opacity hover:opacity-80"
+            href="/pro"
+            className="hidden md:inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider px-3 py-1.5 rounded-md transition-opacity hover:opacity-80"
             style={{
-              background: "rgba(236, 72, 153, 0.1)",
-              border: "1px solid rgba(236, 72, 153, 0.4)",
-              color: "var(--color-elite)",
+              background: "rgba(59, 130, 246, 0.12)",
+              border: "1px solid rgba(59, 130, 246, 0.4)",
+              color: "var(--color-phase1)",
             }}
-            title="Owner console"
           >
-            Owner
+            <Clock className="w-3 h-3" />
+            Pro trial · {trialDays}d left
+          </Link>
+        )}
+        {isAuth && userPlan === "free" && !trialActive && (
+          <Link
+            href="/pro"
+            className="hidden md:inline-flex items-center gap-1 text-[11px] uppercase tracking-wider text-[var(--color-up)] hover:opacity-80 px-2"
+          >
+            <Sparkles className="w-3 h-3" /> Upgrade
           </Link>
         )}
 
-        {isAuth && (() => {
-          if (!snapshot) return null;
-          const userPlan = effectivePlan(snapshot.profile);
-          const trialActive = isTrialActive(snapshot.profile.trial_until);
-          const trialDays = trialDaysRemaining(snapshot.profile.trial_until);
-          if (trialActive && userPlan === "pro" && snapshot.profile.plan === "free") {
-            return (
-              <Link
-                href="/pro"
-                className="hidden md:inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider px-3 py-1.5 rounded-md transition-opacity hover:opacity-80"
-                style={{
-                  background: "rgba(59, 130, 246, 0.12)",
-                  border: "1px solid rgba(59, 130, 246, 0.4)",
-                  color: "var(--color-phase1)",
-                }}
-              >
-                <Clock className="w-3 h-3" />
-                Pro trial · {trialDays}d left
-              </Link>
-            );
-          }
-          if (userPlan === "free") {
-            return (
-              <Link
-                href="/pro"
-                className="hidden md:inline-flex items-center gap-1 text-[11px] uppercase tracking-wider text-[var(--color-up)] hover:opacity-80 px-2"
-              >
-                <Sparkles className="w-3 h-3" /> Upgrade
-              </Link>
-            );
-          }
-          return (
-            <Link
-              href="/pro"
-              className="hidden md:inline-flex items-center gap-1 text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] px-2"
-            >
-              {userPlan.toUpperCase()}
-            </Link>
-          );
-        })()}
-
-        {isAuth && snapshot && (() => {
-          const role = highestRole(snapshot.profile);
-          if (!role) return null;
-          const cfg = ROLES[role];
-          return (
-            <span
-              className="hidden sm:inline-flex items-center gap-1 text-[10px] uppercase font-medium tracking-[0.18em] px-2 py-1 rounded-full"
-              style={{
-                color: cfg.color,
-                backgroundColor: `rgba(${cfg.colorRgb}, 0.12)`,
-                border: `1px solid rgba(${cfg.colorRgb}, 0.4)`,
-              }}
-              title={`Role: ${cfg.label}`}
-            >
-              <Shield className="w-3 h-3" />
-              {cfg.label}
-            </span>
-          );
-        })()}
-
         {isAuth && snapshot ? (
-          <div className="flex items-center gap-1.5">
-            <Link
-              href={`/u/${snapshot.profile.id}`}
-              className="hover:opacity-80 transition-opacity"
-              title="Your profile"
-            >
-              <Avatar
-                name={snapshot.profile.display_name ?? "trader"}
-                src={snapshot.profile.avatar_url}
-                size={30}
-              />
-            </Link>
-            <Link
-              href="/settings"
-              className="text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] p-1.5 hidden sm:inline-flex"
-              title="Settings"
-            >
-              <Shield className="w-4 h-4" />
-            </Link>
-            <form action={signOut}>
-              <button
-                type="submit"
-                className="text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)] p-1.5"
-                title="Sign out"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </form>
-          </div>
+          <AvatarMenu profile={snapshot.profile} />
         ) : (
           <Link
             href="/login"

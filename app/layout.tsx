@@ -3,6 +3,7 @@ import { Inter, Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import Nav from "@/components/Nav";
 import MobileNav from "@/components/MobileNav";
+import Footer from "@/components/Footer";
 import { PortfolioProvider } from "@/components/PortfolioProvider";
 import BracketWatcher from "@/components/BracketWatcher";
 import OrderWatcher from "@/components/OrderWatcher";
@@ -84,6 +85,7 @@ export default async function RootLayout({
         <PortfolioProvider snapshot={snapshot}>
           <Nav />
           <main className="flex-1 pb-20 md:pb-0">{children}</main>
+          <Footer />
           <MobileNav />
           <BracketWatcher />
           <OrderWatcher />

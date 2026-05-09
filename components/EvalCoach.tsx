@@ -137,9 +137,9 @@ export default function EvalCoach({ accountId }: { accountId: string }) {
         </div>
       </div>
 
-      {/* Probability dial */}
-      <div className="flex items-center gap-5">
-        <div className="relative w-20 h-20 shrink-0">
+      {/* Probability dial — bigger and central, headline below */}
+      <div className="flex flex-col items-center gap-3 py-2">
+        <div className="relative w-36 h-36 shrink-0">
           <svg viewBox="0 0 80 80" className="w-full h-full -rotate-90">
             <circle
               cx="40"
@@ -147,7 +147,7 @@ export default function EvalCoach({ accountId }: { accountId: string }) {
               r="34"
               fill="none"
               stroke="var(--color-bg)"
-              strokeWidth="6"
+              strokeWidth="5"
             />
             <circle
               cx="40"
@@ -155,29 +155,27 @@ export default function EvalCoach({ accountId }: { accountId: string }) {
               r="34"
               fill="none"
               stroke={tone.color}
-              strokeWidth="6"
+              strokeWidth="5"
               strokeLinecap="round"
               strokeDasharray={`${(data.passProbability / 100) * (2 * Math.PI * 34)} ${
                 2 * Math.PI * 34
               }`}
               style={{
                 transition: "stroke-dasharray 1s ease-out",
-                filter: `drop-shadow(0 0 6px rgba(${tone.rgb}, 0.4))`,
+                filter: `drop-shadow(0 0 8px rgba(${tone.rgb}, 0.5))`,
               }}
             />
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <div className="font-mono tnum text-2xl font-bold" style={{ color: tone.color }}>
+            <div className="font-mono tnum text-5xl font-bold leading-none" style={{ color: tone.color }}>
               {data.passProbability}
             </div>
-            <div className="text-[8px] uppercase tracking-wider text-[var(--color-text-faint)]">
+            <div className="text-[9px] uppercase tracking-wider text-[var(--color-text-faint)] mt-1">
               % pass
             </div>
           </div>
         </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-base leading-snug">{data.headline}</div>
-        </div>
+        <div className="text-center text-base leading-snug max-w-md">{data.headline}</div>
       </div>
 
       {/* Must do + risks */}

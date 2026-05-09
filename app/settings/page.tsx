@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import AvatarUpload from "@/components/AvatarUpload";
 import DisplayNameForm from "./display-name-form";
+import TradingPrefsForm from "./trading-prefs-form";
+import DangerZone from "./danger-zone";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +16,7 @@ export default async function SettingsPage() {
 
   const { data: profile } = await sb
     .from("profiles")
-    .select("id, display_name, avatar_url, email")
+    .select("id, display_name, avatar_url, email, cooldown_minutes, default_risk_pct")
     .eq("id", user.id)
     .single();
   if (!profile) redirect("/");
@@ -23,6 +25,8 @@ export default async function SettingsPage() {
     display_name: string | null;
     avatar_url: string | null;
     email: string | null;
+    cooldown_minutes: number | null;
+    default_risk_pct: number | null;
   };
 
   return (
@@ -57,9 +61,19 @@ export default async function SettingsPage() {
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-md px-4 h-11 flex items-center text-sm text-[var(--color-text-dim)]">
           {p.email}
         </div>
-        <div className="text-[11px] text-[var(--color-text-faint)]">
-          Email changes coming soon. Reach out to support if you need it changed.
-        </div>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="font-serif text-2xl">Trading preferences</h2>
+        <TradingPrefsForm
+          initialCooldown={p.cooldown_minutes}
+          initialRiskPct={p.default_risk_pct}
+        />
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="font-serif text-2xl text-[var(--color-down)]">Danger zone</h2>
+        <DangerZone />
       </section>
     </div>
   );

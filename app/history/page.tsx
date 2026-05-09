@@ -55,9 +55,9 @@ export default function HistoryPage() {
       <div>
         <h1 className="font-serif text-5xl">Trade history</h1>
         <p className="text-sm text-[var(--color-text-dim)] mt-2 max-w-prose">
-          Click <span className="text-[var(--color-text)] font-medium">Review</span> on any
-          closed trade — the brain reads the candles around your entry &amp; exit and grades
-          your execution.
+          Click{" "}
+          <span className="text-[var(--color-text)] font-medium">Review</span>{" "}
+          on any closed trade — the brain reads the candles around your entry &amp; exit and grades your execution.
         </p>
       </div>
 
