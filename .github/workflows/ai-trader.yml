@@ -1,0 +1,51 @@
+name: AI Trader
+
+on:
+  schedule:
+    # Tick every 10 minutes during US market hours (Mon-Fri, 13:00-21:00 UTC ≈ 9am-5pm ET)
+    - cron: "*/10 13-21 * * 1-5"
+    # Daily research at market open (Mon-Fri, 13:00 UTC ≈ 9am ET)
+    - cron: "0 13 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        required: true
+        default: "tick"
+        type: choice
+        options:
+          - tick
+          - research
+
+env:
+  BASE_URL: https://paper-trader-two-eta.vercel.app
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide which job to run
+        id: which
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "job=${{ github.event.inputs.job }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 13 * * 1-5" ]; then
+            echo "job=research" >> "$GITHUB_OUTPUT"
+          else
+            echo "job=tick" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Hit AI Trader endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          JOB: ${{ steps.which.outputs.job }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET secret not set on this repo"
+            exit 1
+          fi
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/ai-trader-$JOB" \
+            | tee /tmp/result.json
+          echo
