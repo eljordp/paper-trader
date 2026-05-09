@@ -1,16 +1,22 @@
 import { requireOwner, adminClient } from "@/lib/admin";
-import { money, pct } from "@/lib/format";
-import { ROLES, type Role } from "@/lib/roles";
+import { money } from "@/lib/format";
 import { TIERS, type Tier } from "@/lib/tiers";
 import { PLANS, type Plan } from "@/lib/plans";
 import { format } from "date-fns";
 import Link from "next/link";
+import RolePills from "./role-pills";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdminPage() {
+export default async function AdminPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string }>;
+}) {
   await requireOwner();
   const sb = adminClient();
+  const { q } = await searchParams;
+  const query = (q ?? "").trim();
 
   const now = new Date();
   const todayStart = new Date(now);
@@ -58,12 +64,19 @@ export default async function AdminPage() {
     planCounts[r.plan ?? "free"] = (planCounts[r.plan ?? "free"] ?? 0) + 1;
   });
 
-  // Recent signups
-  const { data: recent } = await sb
+  // Recent signups OR search results
+  let usersQuery = sb
     .from("profiles")
     .select("id, email, display_name, plan, created_at, roles, trial_until")
     .order("created_at", { ascending: false })
     .limit(20);
+  if (query.length > 0) {
+    const escaped = query.replace(/[%_]/g, "\\$&");
+    usersQuery = usersQuery.or(
+      `email.ilike.%${escaped}%,display_name.ilike.%${escaped}%`,
+    );
+  }
+  const { data: recent } = await usersQuery;
 
   // Active accounts breakdown by tier
   const { data: tierRows } = await sb
@@ -183,9 +196,39 @@ export default async function AdminPage() {
         </div>
       </section>
 
-      {/* Recent signups */}
+      {/* Users + roles */}
       <section className="space-y-3">
-        <h2 className="font-serif text-2xl">Recent signups</h2>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <h2 className="font-serif text-2xl">
+            {query ? `Users matching "${query}"` : "Recent signups"}
+          </h2>
+          <form action="/admin" method="get" className="flex items-center gap-2">
+            <input
+              type="text"
+              name="q"
+              defaultValue={query}
+              placeholder="Search by email or name…"
+              className="h-9 px-3 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)] text-sm w-64 focus:outline-none focus:border-[var(--color-border-strong)]"
+            />
+            <button
+              type="submit"
+              className="h-9 px-3 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] text-xs uppercase tracking-wider"
+            >
+              Search
+            </button>
+            {query && (
+              <Link
+                href="/admin"
+                className="h-9 px-3 inline-flex items-center text-xs text-[var(--color-text-faint)] hover:text-[var(--color-text-dim)]"
+              >
+                Clear
+              </Link>
+            )}
+          </form>
+        </div>
+        <div className="text-[11px] text-[var(--color-text-faint)]">
+          Click a role pill to grant or revoke. <span className="opacity-70">Owner can&apos;t be set from the UI.</span>
+        </div>
         <div className="bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg overflow-x-auto">
           <div className="min-w-[640px]">
             <div className="grid grid-cols-[1.5fr_2fr_1fr_1fr_auto] gap-4 px-5 py-3 border-b border-[var(--color-border)] text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">
@@ -249,24 +292,7 @@ export default async function AdminPage() {
                       </span>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-1">
-                    {(u.roles ?? []).map((r) => {
-                      const cfg = ROLES[r as Role];
-                      if (!cfg) return null;
-                      return (
-                        <span
-                          key={r}
-                          className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded"
-                          style={{
-                            color: cfg.color,
-                            background: `rgba(${cfg.colorRgb}, 0.12)`,
-                          }}
-                        >
-                          {cfg.label}
-                        </span>
-                      );
-                    })}
-                  </div>
+                  <RolePills userId={u.id} initialRoles={u.roles ?? []} />
                   <div className="text-right text-xs text-[var(--color-text-faint)]">
                     {format(new Date(u.created_at), "MMM d")}
                   </div>
