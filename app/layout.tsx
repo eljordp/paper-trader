@@ -17,12 +17,23 @@ const instrument = Instrument_Serif({
 });
 const jet = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jet" });
 
+const SITE_URL = "https://paper-trader-two-eta.vercel.app";
+const SITE_TITLE = "Paper Trader — Pass your funded eval";
+const SITE_DESC =
+  "Practice on real markets with real eval rules. Unlock $50K → $100K → $150K accounts. Built-in AI that finds your edge.";
+
 export const metadata: Metadata = {
-  title: "Paper Trader — Pass your funded eval",
-  description:
-    "Practice on real markets with real eval rules. Unlock $50K → $100K → $150K accounts as you prove yourself.",
+  metadataBase: new URL(SITE_URL),
+  title: SITE_TITLE,
+  description: SITE_DESC,
   manifest: "/manifest.json",
   themeColor: "#0b0c10",
+  icons: {
+    icon: [
+      { url: "/icon-logo.png", sizes: "any" },
+    ],
+    apple: [{ url: "/icon-logo.png", sizes: "180x180" }],
+  },
   appleWebApp: {
     capable: true,
     title: "Paper Trader",
@@ -33,6 +44,27 @@ export const metadata: Metadata = {
     initialScale: 1,
     maximumScale: 1,
     userScalable: false,
+  },
+  openGraph: {
+    type: "website",
+    url: SITE_URL,
+    siteName: "Paper Trader",
+    title: SITE_TITLE,
+    description: SITE_DESC,
+    images: [
+      {
+        url: "/og-preview.png",
+        width: 1200,
+        height: 630,
+        alt: "Paper Trader — pass your funded eval",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_TITLE,
+    description: SITE_DESC,
+    images: ["/og-preview.png"],
   },
 };
 
