@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#15171f"/>
+      <stop offset="100%" stop-color="#0b0c10"/>
+    </radialGradient>
+    <linearGradient id="chartUp" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00b377"/>
+      <stop offset="100%" stop-color="#00e394"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <!-- Italic 'p' serif glyph approximation -->
+  <text x="50%" y="60%" font-family="'Instrument Serif', 'Times New Roman', serif" font-style="italic" font-size="380" font-weight="400" fill="#f4f4f7" text-anchor="middle" dominant-baseline="middle">p</text>
+  <!-- Upward chart line through the negative space -->
+  <path d="M 110 360 L 200 290 L 270 320 L 340 220 L 410 160" stroke="url(#chartUp)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="drop-shadow(0 0 12px #00e39455)"/>
+  <!-- Arrow tip -->
+  <path d="M 410 160 L 380 175 M 410 160 L 395 195" stroke="url(#chartUp)" stroke-width="14" stroke-linecap="round" fill="none"/>
+</svg>
