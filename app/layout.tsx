@@ -6,6 +6,7 @@ import MobileNav from "@/components/MobileNav";
 import { PortfolioProvider } from "@/components/PortfolioProvider";
 import BracketWatcher from "@/components/BracketWatcher";
 import OrderWatcher from "@/components/OrderWatcher";
+import AILiveWatcher from "@/components/AILiveWatcher";
 import { loadPortfolio } from "@/lib/portfolio-data";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -52,6 +53,7 @@ export default async function RootLayout({
           <MobileNav />
           <BracketWatcher />
           <OrderWatcher />
+          <AILiveWatcher />
         </PortfolioProvider>
       </body>
     </html>
