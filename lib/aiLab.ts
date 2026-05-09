@@ -21,7 +21,11 @@ export type EntryRule =
   | { type: "ote_long"; swing_lookback_bars: number; fib_min?: number; fib_max?: number; min_swing_pct?: number }
   | { type: "ote_short"; swing_lookback_bars: number; fib_min?: number; fib_max?: number; min_swing_pct?: number }
   | { type: "stdv_open_above"; lookback_days?: number; k_sigma?: number }
-  | { type: "stdv_open_below"; lookback_days?: number; k_sigma?: number };
+  | { type: "stdv_open_below"; lookback_days?: number; k_sigma?: number }
+  | { type: "vwap_reclaim_long"; min_bars_below?: number; min_distance_pct?: number }
+  | { type: "vwap_reject_short"; min_bars_above?: number; min_distance_pct?: number }
+  | { type: "vwap_bounce_long"; min_bars_in_regime?: number; touch_within_bars?: number; touch_distance_pct?: number }
+  | { type: "vwap_bounce_short"; min_bars_in_regime?: number; touch_within_bars?: number; touch_distance_pct?: number };
 
 // Entry evaluation result. When stopOverride / targetOverride are returned the
 // engine uses them in place of the strategy's % stop_loss/take_profit, so OTE
@@ -65,6 +69,8 @@ Each hypothesis must include:
   * ma_cross_up / ma_cross_down: triggers when fast MA crosses slow MA
   * ote_long / ote_short: ICT Optimal Trade Entry. Detects the most recent swing leg over swing_lookback_bars (5m bars), then triggers when price retraces into the 62-79% Fib zone. Stop & target are auto-set from swing structure (stop beyond opposite swing, target at swing extreme). Use for trend-continuation pullback entries. Params: swing_lookback_bars (60-120 typical), fib_min (default 0.62), fib_max (default 0.79), min_swing_pct (default 0.5 — minimum swing magnitude as % of price).
   * stdv_open_above / stdv_open_below: Triggers when price moves k standard deviations above/below today's 9:30 ET open, using the trailing N-day stdv of intraday excursions. Use as breakout/expansion signals on trending tapes. Params: lookback_days (default 20), k_sigma (default 1.0 — try 0.5 for earlier signals, 1.5 for stronger expansion).
+  * vwap_reclaim_long / vwap_reject_short: Session VWAP regime FLIP. Long reclaim fires when price was below session VWAP for min_bars_below (default 6) and current bar closes back above it. Short rejection mirrors. Catches intraday reversals as the trend shifts. Params: min_bars_below / min_bars_above (default 6), min_distance_pct (default 0.1 — minimum max distance from VWAP during the prior regime).
+  * vwap_bounce_long / vwap_bounce_short: Session VWAP as SUPPORT/RESISTANCE within an established regime. Bounce long fires when price held above VWAP for min_bars_in_regime (default 6), retraced to touch VWAP within touch_within_bars (default 3), and current bar closes back up — VWAP acted as support. Mirror for short. Best for trend-day continuation entries on the retest. Stop is auto-set just past the touch low/high (structural). Params: min_bars_in_regime (default 6), touch_within_bars (default 3), touch_distance_pct (default 0.05 — how close to VWAP counts as a "touch").
 
 Output STRICT JSON, exactly this shape:
 {
@@ -380,6 +386,213 @@ export function computeStdvOpenLevels(
   return { todayOpen, upperThreshold, lowerThreshold };
 }
 
+// Session VWAP: cumulative Σ(typical_price * volume) / Σ(volume) anchored at
+// today's 9:30 ET open candle (13:30 UTC during DST, 14:30 UTC standard).
+// Returns the running VWAP value at every bar in the session up through `i`.
+export function buildSessionVwapSeries(
+  candles: Candle[],
+  i: number,
+): { sessionStartIdx: number; vwapSeries: number[] } | null {
+  if (candles.length === 0 || i <= 0) return null;
+  const dayKey = (t: number) => {
+    const d = new Date(t * 1000);
+    return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+  };
+  const todayKey = dayKey(candles[i].time);
+  let sessionStartIdx = -1;
+  for (let j = 0; j <= i; j++) {
+    if (dayKey(candles[j].time) !== todayKey) continue;
+    const dj = new Date(candles[j].time * 1000);
+    const minutesUtc = dj.getUTCHours() * 60 + dj.getUTCMinutes();
+    // First bar at or after 13:30 UTC (covers 9:30 ET in both DST & standard time)
+    if (minutesUtc >= 13 * 60 + 30 && minutesUtc < 21 * 60) {
+      sessionStartIdx = j;
+      break;
+    }
+  }
+  if (sessionStartIdx === -1) return null;
+  const vwapSeries: number[] = [];
+  let pvSum = 0, volSum = 0;
+  for (let j = sessionStartIdx; j <= i; j++) {
+    const c = candles[j];
+    const tp = (c.high + c.low + c.close) / 3;
+    const v = c.volume ?? 0;
+    pvSum += tp * v;
+    volSum += v;
+    vwapSeries.push(volSum > 0 ? pvSum / volSum : NaN);
+  }
+  return { sessionStartIdx, vwapSeries };
+}
+
+export function evalVwapReclaimLong(
+  candles: Candle[],
+  i: number,
+  minBarsBelow = 6,
+  minDistancePct = 0.1,
+): { hit: boolean; stopOverride?: number; targetOverride?: number } {
+  const session = buildSessionVwapSeries(candles, i);
+  if (!session) return { hit: false };
+  const { sessionStartIdx, vwapSeries } = session;
+  if (vwapSeries.length < minBarsBelow + 2) return { hit: false };
+  const currentVwap = vwapSeries[vwapSeries.length - 1];
+  const prevVwap = vwapSeries[vwapSeries.length - 2];
+  if (!isFinite(currentVwap) || !isFinite(prevVwap)) return { hit: false };
+  // Reclaim: current close above VWAP, prior close at or below it
+  if (candles[i].close <= currentVwap) return { hit: false };
+  if (candles[i - 1].close > prevVwap) return { hit: false };
+  // The N bars before the reclaim must all have closed BELOW their VWAP
+  const checkEndK = vwapSeries.length - 2;
+  const checkStartK = checkEndK - (minBarsBelow - 1);
+  if (checkStartK < 0) return { hit: false };
+  let maxDistBelow = 0;
+  for (let k = checkStartK; k <= checkEndK; k++) {
+    const idx = sessionStartIdx + k;
+    const v = vwapSeries[k];
+    if (!isFinite(v)) return { hit: false };
+    if (candles[idx].close >= v) return { hit: false };
+    const dist = ((v - candles[idx].close) / v) * 100;
+    if (dist > maxDistBelow) maxDistBelow = dist;
+  }
+  if (maxDistBelow < minDistancePct) return { hit: false };
+  return { hit: true };
+}
+
+export function evalVwapRejectShort(
+  candles: Candle[],
+  i: number,
+  minBarsAbove = 6,
+  minDistancePct = 0.1,
+): { hit: boolean; stopOverride?: number; targetOverride?: number } {
+  const session = buildSessionVwapSeries(candles, i);
+  if (!session) return { hit: false };
+  const { sessionStartIdx, vwapSeries } = session;
+  if (vwapSeries.length < minBarsAbove + 2) return { hit: false };
+  const currentVwap = vwapSeries[vwapSeries.length - 1];
+  const prevVwap = vwapSeries[vwapSeries.length - 2];
+  if (!isFinite(currentVwap) || !isFinite(prevVwap)) return { hit: false };
+  // Rejection: current close below VWAP, prior close at or above it
+  if (candles[i].close >= currentVwap) return { hit: false };
+  if (candles[i - 1].close < prevVwap) return { hit: false };
+  const checkEndK = vwapSeries.length - 2;
+  const checkStartK = checkEndK - (minBarsAbove - 1);
+  if (checkStartK < 0) return { hit: false };
+  let maxDistAbove = 0;
+  for (let k = checkStartK; k <= checkEndK; k++) {
+    const idx = sessionStartIdx + k;
+    const v = vwapSeries[k];
+    if (!isFinite(v)) return { hit: false };
+    if (candles[idx].close <= v) return { hit: false };
+    const dist = ((candles[idx].close - v) / v) * 100;
+    if (dist > maxDistAbove) maxDistAbove = dist;
+  }
+  if (maxDistAbove < minDistancePct) return { hit: false };
+  return { hit: true };
+}
+
+// VWAP bounce (long): price has been above VWAP (in an "above-VWAP regime") for
+// at least min_bars_in_regime, retraced down to within touch_distance_pct of
+// VWAP within the last touch_within_bars, and the current bar closes back up
+// (continuation off VWAP-as-support).
+export function evalVwapBounceLong(
+  candles: Candle[],
+  i: number,
+  minBarsInRegime = 6,
+  touchWithinBars = 3,
+  touchDistancePct = 0.05,
+): { hit: boolean; stopOverride?: number; targetOverride?: number } {
+  const session = buildSessionVwapSeries(candles, i);
+  if (!session) return { hit: false };
+  const { sessionStartIdx, vwapSeries } = session;
+  if (vwapSeries.length < minBarsInRegime + 2) return { hit: false };
+  const currentVwap = vwapSeries[vwapSeries.length - 1];
+  if (!isFinite(currentVwap)) return { hit: false };
+  // Current bar must close above VWAP and above prior close (bounce confirmation)
+  if (candles[i].close <= currentVwap) return { hit: false };
+  if (candles[i].close <= candles[i - 1].close) return { hit: false };
+  // Regime check: the regime window before the touch should have been mostly above VWAP.
+  // We look at the bars from `regimeStartK` up to (but not including) the touch window.
+  const touchEndK = vwapSeries.length - 1;
+  const touchStartK = Math.max(0, touchEndK - (touchWithinBars - 1));
+  const regimeEndK = touchStartK - 1;
+  const regimeStartK = regimeEndK - (minBarsInRegime - 1);
+  if (regimeStartK < 0) return { hit: false };
+  for (let k = regimeStartK; k <= regimeEndK; k++) {
+    const idx = sessionStartIdx + k;
+    const v = vwapSeries[k];
+    if (!isFinite(v)) return { hit: false };
+    if (candles[idx].close <= v) return { hit: false }; // regime broken
+  }
+  // Touch check: at least one bar in the touch window had its low within touchDistancePct of VWAP
+  let touched = false;
+  let touchLowestIdx = -1;
+  let touchLowestPrice = Infinity;
+  for (let k = touchStartK; k <= touchEndK - 1; k++) {
+    const idx = sessionStartIdx + k;
+    const v = vwapSeries[k];
+    if (!isFinite(v)) continue;
+    const lowDist = ((candles[idx].low - v) / v) * 100; // negative if below VWAP, small positive if just above
+    // Touch if low came within touchDistancePct of VWAP from above (or briefly poked below)
+    if (lowDist <= touchDistancePct && candles[idx].low < (vwapSeries[touchEndK] * (1 + touchDistancePct / 100))) {
+      touched = true;
+      if (candles[idx].low < touchLowestPrice) {
+        touchLowestPrice = candles[idx].low;
+        touchLowestIdx = idx;
+      }
+    }
+  }
+  if (!touched || touchLowestIdx < 0) return { hit: false };
+  // Stop just below the touch low (structural)
+  const stopOverride = touchLowestPrice * 0.999;
+  return { hit: true, stopOverride };
+}
+
+export function evalVwapBounceShort(
+  candles: Candle[],
+  i: number,
+  minBarsInRegime = 6,
+  touchWithinBars = 3,
+  touchDistancePct = 0.05,
+): { hit: boolean; stopOverride?: number; targetOverride?: number } {
+  const session = buildSessionVwapSeries(candles, i);
+  if (!session) return { hit: false };
+  const { sessionStartIdx, vwapSeries } = session;
+  if (vwapSeries.length < minBarsInRegime + 2) return { hit: false };
+  const currentVwap = vwapSeries[vwapSeries.length - 1];
+  if (!isFinite(currentVwap)) return { hit: false };
+  if (candles[i].close >= currentVwap) return { hit: false };
+  if (candles[i].close >= candles[i - 1].close) return { hit: false };
+  const touchEndK = vwapSeries.length - 1;
+  const touchStartK = Math.max(0, touchEndK - (touchWithinBars - 1));
+  const regimeEndK = touchStartK - 1;
+  const regimeStartK = regimeEndK - (minBarsInRegime - 1);
+  if (regimeStartK < 0) return { hit: false };
+  for (let k = regimeStartK; k <= regimeEndK; k++) {
+    const idx = sessionStartIdx + k;
+    const v = vwapSeries[k];
+    if (!isFinite(v)) return { hit: false };
+    if (candles[idx].close >= v) return { hit: false };
+  }
+  let touched = false;
+  let touchHighestIdx = -1;
+  let touchHighestPrice = -Infinity;
+  for (let k = touchStartK; k <= touchEndK - 1; k++) {
+    const idx = sessionStartIdx + k;
+    const v = vwapSeries[k];
+    if (!isFinite(v)) continue;
+    const highDist = ((v - candles[idx].high) / v) * 100;
+    if (highDist <= touchDistancePct && candles[idx].high > (vwapSeries[touchEndK] * (1 - touchDistancePct / 100))) {
+      touched = true;
+      if (candles[idx].high > touchHighestPrice) {
+        touchHighestPrice = candles[idx].high;
+        touchHighestIdx = idx;
+      }
+    }
+  }
+  if (!touched || touchHighestIdx < 0) return { hit: false };
+  const stopOverride = touchHighestPrice * 1.001;
+  return { hit: true, stopOverride };
+}
+
 export function evaluateEntryAt(
   rule: EntryRule,
   candles: Candle[],
@@ -469,6 +682,32 @@ export function evaluateEntryAt(
       if (c.close < levels.lowerThreshold && prev >= levels.lowerThreshold) return { hit: true };
       return { hit: false };
     }
+    case "vwap_reclaim_long":
+      return evalVwapReclaimLong(
+        candles, i,
+        rule.min_bars_below ?? 6,
+        rule.min_distance_pct ?? 0.1,
+      );
+    case "vwap_reject_short":
+      return evalVwapRejectShort(
+        candles, i,
+        rule.min_bars_above ?? 6,
+        rule.min_distance_pct ?? 0.1,
+      );
+    case "vwap_bounce_long":
+      return evalVwapBounceLong(
+        candles, i,
+        rule.min_bars_in_regime ?? 6,
+        rule.touch_within_bars ?? 3,
+        rule.touch_distance_pct ?? 0.05,
+      );
+    case "vwap_bounce_short":
+      return evalVwapBounceShort(
+        candles, i,
+        rule.min_bars_in_regime ?? 6,
+        rule.touch_within_bars ?? 3,
+        rule.touch_distance_pct ?? 0.05,
+      );
   }
 }
 
