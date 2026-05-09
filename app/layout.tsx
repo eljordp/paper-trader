@@ -30,9 +30,11 @@ export const metadata: Metadata = {
   themeColor: "#0b0c10",
   icons: {
     icon: [
+      { url: "/logo.svg", type: "image/svg+xml" },
       { url: "/icon-logo.png", sizes: "any" },
     ],
     apple: [{ url: "/icon-logo.png", sizes: "180x180" }],
+    shortcut: "/icon-logo.png",
   },
   appleWebApp: {
     capable: true,
