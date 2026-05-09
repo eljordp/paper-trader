@@ -1,7 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { adminClient } from "@/lib/admin";
 import { getCandles, getQuote } from "@/lib/yahoo";
-import type { StrategyRules, EntryRule } from "@/lib/aiLab";
+import type { StrategyRules, EntryRule, EntryEval } from "@/lib/aiLab";
+import { evalOteLong, evalOteShort, computeStdvOpenLevels } from "@/lib/aiLab";
 import { getAiTraderProfile } from "@/lib/aiTrader";
 
 type Sb = SupabaseClient;
@@ -49,44 +50,98 @@ const CANDLE_RANGE = "5D" as const;
 const BARS_PER_HOUR = 12;
 const DEFAULT_TIME_EXIT_BARS = 240; // 20h of 5m bars
 
-function entryHitOnLastCandle(
+function evalEntryLastCandle(
   rule: EntryRule,
-  candles: Array<{ time: number; open: number; high: number; low: number; close: number }>,
-): boolean {
-  if (candles.length < 2) return false;
+  candles: Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>,
+): EntryEval {
+  if (candles.length < 2) return { hit: false };
   const i = candles.length - 1;
   const c = candles[i];
   switch (rule.type) {
     case "price_drop": {
       const lookbackBars = Math.max(1, Math.floor(rule.lookback_minutes / 5));
       const past = candles[i - lookbackBars];
-      if (!past) return false;
-      return ((c.close - past.close) / past.close) * 100 <= rule.magnitude_pct;
+      if (!past) return { hit: false };
+      return ((c.close - past.close) / past.close) * 100 <= rule.magnitude_pct
+        ? { hit: true }
+        : { hit: false };
     }
     case "price_pop": {
       const lookbackBars = Math.max(1, Math.floor(rule.lookback_minutes / 5));
       const past = candles[i - lookbackBars];
-      if (!past) return false;
-      return ((c.close - past.close) / past.close) * 100 >= rule.magnitude_pct;
+      if (!past) return { hit: false };
+      return ((c.close - past.close) / past.close) * 100 >= rule.magnitude_pct
+        ? { hit: true }
+        : { hit: false };
     }
     case "breakout_above": {
-      if (i < rule.lookback_bars) return false;
+      if (i < rule.lookback_bars) return { hit: false };
       let high = -Infinity;
       for (let j = i - rule.lookback_bars; j < i; j++)
         if (candles[j].high > high) high = candles[j].high;
-      return c.close > high && candles[i - 1].close <= high;
+      return c.close > high && candles[i - 1].close <= high
+        ? { hit: true }
+        : { hit: false };
     }
     case "breakdown_below": {
-      if (i < rule.lookback_bars) return false;
+      if (i < rule.lookback_bars) return { hit: false };
       let low = Infinity;
       for (let j = i - rule.lookback_bars; j < i; j++)
         if (candles[j].low < low) low = candles[j].low;
-      return c.close < low && candles[i - 1].close >= low;
+      return c.close < low && candles[i - 1].close >= low
+        ? { hit: true }
+        : { hit: false };
+    }
+    case "ote_long": {
+      const candlesFull = candles.map((b) => ({ ...b, volume: b.volume ?? 0 }));
+      return evalOteLong(
+        candlesFull, i,
+        rule.swing_lookback_bars,
+        rule.fib_min ?? 0.62,
+        rule.fib_max ?? 0.79,
+        rule.min_swing_pct ?? 0.5,
+      );
+    }
+    case "ote_short": {
+      const candlesFull = candles.map((b) => ({ ...b, volume: b.volume ?? 0 }));
+      return evalOteShort(
+        candlesFull, i,
+        rule.swing_lookback_bars,
+        rule.fib_min ?? 0.62,
+        rule.fib_max ?? 0.79,
+        rule.min_swing_pct ?? 0.5,
+      );
+    }
+    case "stdv_open_above": {
+      const candlesFull = candles.map((b) => ({ ...b, volume: b.volume ?? 0 }));
+      const levels = computeStdvOpenLevels(
+        candlesFull, i,
+        rule.lookback_days ?? 20,
+        rule.k_sigma ?? 1.0,
+      );
+      if (!levels) return { hit: false };
+      const prev = candles[i - 1].close;
+      return c.close > levels.upperThreshold && prev <= levels.upperThreshold
+        ? { hit: true }
+        : { hit: false };
+    }
+    case "stdv_open_below": {
+      const candlesFull = candles.map((b) => ({ ...b, volume: b.volume ?? 0 }));
+      const levels = computeStdvOpenLevels(
+        candlesFull, i,
+        rule.lookback_days ?? 20,
+        rule.k_sigma ?? 1.0,
+      );
+      if (!levels) return { hit: false };
+      const prev = candles[i - 1].close;
+      return c.close < levels.lowerThreshold && prev >= levels.lowerThreshold
+        ? { hit: true }
+        : { hit: false };
     }
     // RSI / MA-cross variants are out of scope for the always-on cron — they
     // need indicator series and the live signal cadence is forgiving without them.
     default:
-      return false;
+      return { hit: false };
   }
 }
 
@@ -369,7 +424,8 @@ async function processEntries(
           continue;
       }
 
-      if (!entryHitOnLastCandle(s.rules.entry, candles)) continue;
+      const entryEval = evalEntryLastCandle(s.rules.entry, candles);
+      if (!entryEval.hit) continue;
 
       // Don't double-enter — skip if any trade for this strategy+ticker fired
       // in the last hour
@@ -395,15 +451,22 @@ async function processEntries(
       const stopLossPct = s.rules.exit.stop_loss_pct;
       const takeProfitPct = s.rules.exit.take_profit_pct;
       const stopPrice =
-        s.rules.side === "long"
-          ? entryPrice * (1 + stopLossPct / 100)
-          : entryPrice * (1 - stopLossPct / 100);
+        entryEval.stopOverride != null
+          ? entryEval.stopOverride
+          : s.rules.side === "long"
+            ? entryPrice * (1 + stopLossPct / 100)
+            : entryPrice * (1 - stopLossPct / 100);
       const targetPrice =
-        s.rules.side === "long"
-          ? entryPrice * (1 + takeProfitPct / 100)
-          : entryPrice * (1 - takeProfitPct / 100);
+        entryEval.targetOverride != null
+          ? entryEval.targetOverride
+          : s.rules.side === "long"
+            ? entryPrice * (1 + takeProfitPct / 100)
+            : entryPrice * (1 - takeProfitPct / 100);
       const stopDistance = Math.abs(entryPrice - stopPrice);
       if (stopDistance <= 0) continue;
+      // Sanity: structural stop must be on the right side of entry
+      if (s.rules.side === "long" && stopPrice >= entryPrice) continue;
+      if (s.rules.side === "short" && stopPrice <= entryPrice) continue;
 
       const accountRiskPct = s.max_account_risk_pct ?? 1.0;
       const riskBudget =
@@ -479,7 +542,13 @@ async function processEntries(
           condition: s.rules.entry,
         },
         output: { success: true },
-        rationale: `${s.rules.side === "long" ? "Bought" : "Shorted"} ${qty} ${ticker} @ $${entryPrice.toFixed(2)} on strategy "${s.name}". Stop $${stopPrice.toFixed(2)} (${stopLossPct}%), target $${targetPrice.toFixed(2)} (${takeProfitPct >= 0 ? "+" : ""}${takeProfitPct}%). Sized ${qty} units = ${accountRiskPct}% account risk ($${riskBudget.toFixed(0)}).`,
+        rationale: (() => {
+          const stopActualPct = ((stopPrice - entryPrice) / entryPrice) * 100;
+          const targetActualPct = ((targetPrice - entryPrice) / entryPrice) * 100;
+          const usedOverride = entryEval.stopOverride != null || entryEval.targetOverride != null;
+          const suffix = usedOverride ? " (structural levels from entry rule)" : "";
+          return `${s.rules.side === "long" ? "Bought" : "Shorted"} ${qty} ${ticker} @ $${entryPrice.toFixed(2)} on strategy "${s.name}". Stop $${stopPrice.toFixed(2)} (${stopActualPct >= 0 ? "+" : ""}${stopActualPct.toFixed(2)}%), target $${targetPrice.toFixed(2)} (${targetActualPct >= 0 ? "+" : ""}${targetActualPct.toFixed(2)}%)${suffix}. Sized ${qty} units = ${accountRiskPct}% account risk ($${riskBudget.toFixed(0)}). Configured: SL ${stopLossPct}% / TP ${takeProfitPct}%.`;
+        })(),
       });
 
       fired.push({

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getCandles } from "@/lib/yahoo";
 import type { StrategyRules } from "@/lib/aiLab";
+import { evaluateEntryAt } from "@/lib/aiLab";
 import { buy, shortOpen } from "@/lib/actions";
 
 export const dynamic = "force-dynamic";
@@ -48,49 +49,31 @@ export async function POST() {
         if (hr < r.time_window_utc[0] || hr >= r.time_window_utc[1]) continue;
       }
 
-      let entryHit = false;
-      switch (r.entry.type) {
-        case "price_drop": {
-          const lookbackBars = Math.max(1, Math.floor(r.entry.lookback_minutes / 5));
-          const past = candles[i - lookbackBars];
-          if (past) entryHit = ((c.close - past.close) / past.close) * 100 <= r.entry.magnitude_pct;
-          break;
-        }
-        case "price_pop": {
-          const lookbackBars = Math.max(1, Math.floor(r.entry.lookback_minutes / 5));
-          const past = candles[i - lookbackBars];
-          if (past) entryHit = ((c.close - past.close) / past.close) * 100 >= r.entry.magnitude_pct;
-          break;
-        }
-        case "breakout_above": {
-          if (i >= r.entry.lookback_bars) {
-            let high = -Infinity;
-            for (let j = i - r.entry.lookback_bars; j < i; j++) if (candles[j].high > high) high = candles[j].high;
-            entryHit = c.close > high && candles[i - 1].close <= high;
-          }
-          break;
-        }
-        case "breakdown_below": {
-          if (i >= r.entry.lookback_bars) {
-            let low = Infinity;
-            for (let j = i - r.entry.lookback_bars; j < i; j++) if (candles[j].low < low) low = candles[j].low;
-            entryHit = c.close < low && candles[i - 1].close >= low;
-          }
-          break;
-        }
-        default: break;
-      }
-      if (!entryHit) continue;
+      // RSI/MA series unused for live signals — the bypass returns hit:false for those rule types
+      const evalResult = evaluateEntryAt(r.entry, candles, i, []);
+      if (!evalResult.hit) continue;
 
       const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       const { count: recentCount } = await sb.from("trades").select("id", { count: "exact", head: true }).eq("ai_strategy_id", s.id).eq("ticker", ticker).gte("created_at", sixtyMinAgo);
       if ((recentCount ?? 0) > 0) continue;
 
       const entryPrice = c.close;
-      const stopPrice = r.side === "long" ? entryPrice * (1 + r.exit.stop_loss_pct / 100) : entryPrice * (1 - r.exit.stop_loss_pct / 100);
-      const targetPrice = r.side === "long" ? entryPrice * (1 + r.exit.take_profit_pct / 100) : entryPrice * (1 - r.exit.take_profit_pct / 100);
+      const stopPrice =
+        evalResult.stopOverride != null
+          ? evalResult.stopOverride
+          : r.side === "long"
+            ? entryPrice * (1 + r.exit.stop_loss_pct / 100)
+            : entryPrice * (1 - r.exit.stop_loss_pct / 100);
+      const targetPrice =
+        evalResult.targetOverride != null
+          ? evalResult.targetOverride
+          : r.side === "long"
+            ? entryPrice * (1 + r.exit.take_profit_pct / 100)
+            : entryPrice * (1 - r.exit.take_profit_pct / 100);
       const stopDistance = Math.abs(entryPrice - stopPrice);
       if (stopDistance <= 0) continue;
+      if (r.side === "long" && stopPrice >= entryPrice) continue;
+      if (r.side === "short" && stopPrice <= entryPrice) continue;
       const riskBudget = (Number(account.starting_cash) * (s.max_account_risk_pct ?? 1)) / 100;
       const qty = Math.floor((riskBudget / stopDistance) * 100) / 100;
       if (qty <= 0) continue;
@@ -107,8 +90,12 @@ export async function POST() {
       if (r.side === "long") result = await buy(fd);
       else result = await shortOpen(fd);
 
+      const stopActualPct = ((stopPrice - entryPrice) / entryPrice) * 100;
+      const targetActualPct = ((targetPrice - entryPrice) / entryPrice) * 100;
+      const usedOverride = evalResult.stopOverride != null || evalResult.targetOverride != null;
+      const overrideNote = usedOverride ? " (structural levels from entry rule)" : "";
       const rationale = result.success
-        ? `Signal fired on ${ticker} at $${entryPrice.toFixed(2)}. Strategy: "${s.name}". Side: ${r.side}. Stop: $${stopPrice.toFixed(2)} (${r.exit.stop_loss_pct}%). Target: $${targetPrice.toFixed(2)} (+${r.exit.take_profit_pct}%). Sized ${qty} units for 1% risk ($${riskBudget.toFixed(0)}).`
+        ? `Signal fired on ${ticker} at $${entryPrice.toFixed(2)}. Strategy: "${s.name}". Side: ${r.side}. Stop: $${stopPrice.toFixed(2)} (${stopActualPct >= 0 ? "+" : ""}${stopActualPct.toFixed(2)}%). Target: $${targetPrice.toFixed(2)} (${targetActualPct >= 0 ? "+" : ""}${targetActualPct.toFixed(2)}%)${overrideNote}. Sized ${qty} units for 1% risk ($${riskBudget.toFixed(0)}).`
         : `Signal triggered on ${ticker} but fill failed: ${result.error ?? "unknown"}.`;
 
       await sb.from("ai_decisions").insert({
