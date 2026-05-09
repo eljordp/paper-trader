@@ -22,8 +22,6 @@ export type EntryRule =
   | { type: "ote_short"; swing_lookback_bars: number; fib_min?: number; fib_max?: number; min_swing_pct?: number }
   | { type: "stdv_open_above"; lookback_days?: number; k_sigma?: number }
   | { type: "stdv_open_below"; lookback_days?: number; k_sigma?: number }
-  | { type: "vwap_reclaim_long"; min_bars_below?: number; min_distance_pct?: number }
-  | { type: "vwap_reject_short"; min_bars_above?: number; min_distance_pct?: number }
   | { type: "vwap_bounce_long"; min_bars_in_regime?: number; touch_within_bars?: number; touch_distance_pct?: number }
   | { type: "vwap_bounce_short"; min_bars_in_regime?: number; touch_within_bars?: number; touch_distance_pct?: number };
 
@@ -69,8 +67,7 @@ Each hypothesis must include:
   * ma_cross_up / ma_cross_down: triggers when fast MA crosses slow MA
   * ote_long / ote_short: ICT Optimal Trade Entry. Detects the most recent swing leg over swing_lookback_bars (5m bars), then triggers when price retraces into the 62-79% Fib zone. Stop & target are auto-set from swing structure (stop beyond opposite swing, target at swing extreme). Use for trend-continuation pullback entries. Params: swing_lookback_bars (60-120 typical), fib_min (default 0.62), fib_max (default 0.79), min_swing_pct (default 0.5 — minimum swing magnitude as % of price).
   * stdv_open_above / stdv_open_below: Triggers when price moves k standard deviations above/below today's 9:30 ET open, using the trailing N-day stdv of intraday excursions. Use as breakout/expansion signals on trending tapes. Params: lookback_days (default 20), k_sigma (default 1.0 — try 0.5 for earlier signals, 1.5 for stronger expansion).
-  * vwap_reclaim_long / vwap_reject_short: Session VWAP regime FLIP. Long reclaim fires when price was below session VWAP for min_bars_below (default 6) and current bar closes back above it. Short rejection mirrors. Catches intraday reversals as the trend shifts. Params: min_bars_below / min_bars_above (default 6), min_distance_pct (default 0.1 — minimum max distance from VWAP during the prior regime).
-  * vwap_bounce_long / vwap_bounce_short: Session VWAP as SUPPORT/RESISTANCE within an established regime. Bounce long fires when price held above VWAP for min_bars_in_regime (default 6), retraced to touch VWAP within touch_within_bars (default 3), and current bar closes back up — VWAP acted as support. Mirror for short. Best for trend-day continuation entries on the retest. Stop is auto-set just past the touch low/high (structural). Params: min_bars_in_regime (default 6), touch_within_bars (default 3), touch_distance_pct (default 0.05 — how close to VWAP counts as a "touch").
+  * vwap_bounce_long / vwap_bounce_short: Session VWAP as SUPPORT/RESISTANCE within an established regime. Bounce long fires when price held above VWAP for min_bars_in_regime (default 6), retraced to touch VWAP within touch_within_bars (default 3), and current bar closes back up — VWAP acted as support. Mirror for short. Best for trend-day continuation entries on the retest. Stop is auto-set just past the touch low/high (structural). Params: min_bars_in_regime (default 6), touch_within_bars (default 3), touch_distance_pct (default 0.05 — how close to VWAP counts as a "touch"). NOTE: bare VWAP crosses without confirmation (no retest, no regime hold) get whipsawed all day — never propose a "cross VWAP and enter" rule.
 
 Output STRICT JSON, exactly this shape:
 {
@@ -424,71 +421,6 @@ export function buildSessionVwapSeries(
   return { sessionStartIdx, vwapSeries };
 }
 
-export function evalVwapReclaimLong(
-  candles: Candle[],
-  i: number,
-  minBarsBelow = 6,
-  minDistancePct = 0.1,
-): { hit: boolean; stopOverride?: number; targetOverride?: number } {
-  const session = buildSessionVwapSeries(candles, i);
-  if (!session) return { hit: false };
-  const { sessionStartIdx, vwapSeries } = session;
-  if (vwapSeries.length < minBarsBelow + 2) return { hit: false };
-  const currentVwap = vwapSeries[vwapSeries.length - 1];
-  const prevVwap = vwapSeries[vwapSeries.length - 2];
-  if (!isFinite(currentVwap) || !isFinite(prevVwap)) return { hit: false };
-  // Reclaim: current close above VWAP, prior close at or below it
-  if (candles[i].close <= currentVwap) return { hit: false };
-  if (candles[i - 1].close > prevVwap) return { hit: false };
-  // The N bars before the reclaim must all have closed BELOW their VWAP
-  const checkEndK = vwapSeries.length - 2;
-  const checkStartK = checkEndK - (minBarsBelow - 1);
-  if (checkStartK < 0) return { hit: false };
-  let maxDistBelow = 0;
-  for (let k = checkStartK; k <= checkEndK; k++) {
-    const idx = sessionStartIdx + k;
-    const v = vwapSeries[k];
-    if (!isFinite(v)) return { hit: false };
-    if (candles[idx].close >= v) return { hit: false };
-    const dist = ((v - candles[idx].close) / v) * 100;
-    if (dist > maxDistBelow) maxDistBelow = dist;
-  }
-  if (maxDistBelow < minDistancePct) return { hit: false };
-  return { hit: true };
-}
-
-export function evalVwapRejectShort(
-  candles: Candle[],
-  i: number,
-  minBarsAbove = 6,
-  minDistancePct = 0.1,
-): { hit: boolean; stopOverride?: number; targetOverride?: number } {
-  const session = buildSessionVwapSeries(candles, i);
-  if (!session) return { hit: false };
-  const { sessionStartIdx, vwapSeries } = session;
-  if (vwapSeries.length < minBarsAbove + 2) return { hit: false };
-  const currentVwap = vwapSeries[vwapSeries.length - 1];
-  const prevVwap = vwapSeries[vwapSeries.length - 2];
-  if (!isFinite(currentVwap) || !isFinite(prevVwap)) return { hit: false };
-  // Rejection: current close below VWAP, prior close at or above it
-  if (candles[i].close >= currentVwap) return { hit: false };
-  if (candles[i - 1].close < prevVwap) return { hit: false };
-  const checkEndK = vwapSeries.length - 2;
-  const checkStartK = checkEndK - (minBarsAbove - 1);
-  if (checkStartK < 0) return { hit: false };
-  let maxDistAbove = 0;
-  for (let k = checkStartK; k <= checkEndK; k++) {
-    const idx = sessionStartIdx + k;
-    const v = vwapSeries[k];
-    if (!isFinite(v)) return { hit: false };
-    if (candles[idx].close <= v) return { hit: false };
-    const dist = ((candles[idx].close - v) / v) * 100;
-    if (dist > maxDistAbove) maxDistAbove = dist;
-  }
-  if (maxDistAbove < minDistancePct) return { hit: false };
-  return { hit: true };
-}
-
 // VWAP bounce (long): price has been above VWAP (in an "above-VWAP regime") for
 // at least min_bars_in_regime, retraced down to within touch_distance_pct of
 // VWAP within the last touch_within_bars, and the current bar closes back up
@@ -682,18 +614,6 @@ export function evaluateEntryAt(
       if (c.close < levels.lowerThreshold && prev >= levels.lowerThreshold) return { hit: true };
       return { hit: false };
     }
-    case "vwap_reclaim_long":
-      return evalVwapReclaimLong(
-        candles, i,
-        rule.min_bars_below ?? 6,
-        rule.min_distance_pct ?? 0.1,
-      );
-    case "vwap_reject_short":
-      return evalVwapRejectShort(
-        candles, i,
-        rule.min_bars_above ?? 6,
-        rule.min_distance_pct ?? 0.1,
-      );
     case "vwap_bounce_long":
       return evalVwapBounceLong(
         candles, i,

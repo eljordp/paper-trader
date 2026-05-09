@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { adminClient } from "@/lib/admin";
 import { getCandles, getQuote } from "@/lib/yahoo";
 import type { StrategyRules, EntryRule, EntryEval } from "@/lib/aiLab";
-import { evalOteLong, evalOteShort, computeStdvOpenLevels, evalVwapReclaimLong, evalVwapRejectShort, evalVwapBounceLong, evalVwapBounceShort } from "@/lib/aiLab";
+import { evalOteLong, evalOteShort, computeStdvOpenLevels, evalVwapBounceLong, evalVwapBounceShort } from "@/lib/aiLab";
 import { getAiTraderProfile } from "@/lib/aiTrader";
 
 type Sb = SupabaseClient;
@@ -137,22 +137,6 @@ function evalEntryLastCandle(
       return c.close < levels.lowerThreshold && prev >= levels.lowerThreshold
         ? { hit: true }
         : { hit: false };
-    }
-    case "vwap_reclaim_long": {
-      const candlesFull = candles.map((b) => ({ ...b, volume: b.volume ?? 0 }));
-      return evalVwapReclaimLong(
-        candlesFull, i,
-        rule.min_bars_below ?? 6,
-        rule.min_distance_pct ?? 0.1,
-      );
-    }
-    case "vwap_reject_short": {
-      const candlesFull = candles.map((b) => ({ ...b, volume: b.volume ?? 0 }));
-      return evalVwapRejectShort(
-        candlesFull, i,
-        rule.min_bars_above ?? 6,
-        rule.min_distance_pct ?? 0.1,
-      );
     }
     case "vwap_bounce_long": {
       const candlesFull = candles.map((b) => ({ ...b, volume: b.volume ?? 0 }));
