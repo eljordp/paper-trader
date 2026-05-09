@@ -59,7 +59,7 @@ const GENERATION_SYSTEM = `You are a quantitative strategy designer. Given today
 Each hypothesis must include:
 - A name (5 words max)
 - A clear thesis (one sentence — what edge are you trying to capture?)
-- Instruments (1-3 tickers — prefer liquid ETFs/large-caps: SPY, QQQ, IWM, AAPL, NVDA, TSLA, AMZN, MSFT, GOOG, META; or futures: NQ=F, ES=F, MES=F, MNQ=F)
+- Instruments (1-3 tickers — prefer liquid ETFs/large-caps: SPY, QQQ, IWM, AAPL, NVDA, TSLA, AMZN, MSFT, GOOG, META; or e-mini futures: ES=F (S&P 500, $50/pt), NQ=F (Nasdaq-100, $20/pt) — futures trade nearly 24/5 so propose them when the setup wants overnight or pre-market follow-through, or when you specifically want index leverage. ES is the futures cousin of SPY; NQ is the cousin of QQQ.)
 - Structured rules (entry + exit) using ONLY these primitive types:
   * price_drop / price_pop: triggers on % move over N minutes
   * breakout_above / breakdown_below: triggers when price closes above/below the N-bar high/low

@@ -11,9 +11,10 @@ export const maxDuration = 60;
 // Daily research cycle for the AI Trader.
 // 1. Pull fresh market state + news
 // 2. Generate 5 strategy hypotheses via GPT
-// 3. Filter to stock-only (skip futures)
+// 3. Filter to supported instruments (stocks + ES/NQ futures)
 // 4. Auto-archive yesterday's live strategies that didn't fire
 // 5. Mark the top 2 fresh strategies as live with conservative caps
+const SUPPORTED_FUTURES = new Set(["ES=F", "NQ=F"]);
 async function handle(req: Request) {
   if (!isCronAuthorized(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -60,11 +61,14 @@ async function handle(req: Request) {
   };
 
   const generated = await generateHypotheses(ctx);
-  const stockOnly = generated.filter((s) =>
-    s.instruments.every((t) => !t.includes("=F")),
+  // Allow stocks + the supported futures (ES, NQ). Drop strategies that
+  // reference any unsupported futures (micros, gold, oil — schema-supported
+  // but not yet on the AI Trader's product list).
+  const supported = generated.filter((s) =>
+    s.instruments.every((t) => !t.includes("=F") || SUPPORTED_FUTURES.has(t)),
   );
-  if (stockOnly.length === 0) {
-    return NextResponse.json({ error: "Brain returned no stock strategies" }, { status: 503 });
+  if (supported.length === 0) {
+    return NextResponse.json({ error: "Brain returned no supported strategies" }, { status: 503 });
   }
 
   // Archive yesterday's untriggered live strategies
@@ -96,7 +100,7 @@ async function handle(req: Request) {
     hypothesis: string;
     instruments: string[];
   }> = [];
-  for (const s of stockOnly.slice(0, 5)) {
+  for (const s of supported.slice(0, 5)) {
     const { data } = await sb
       .from("ai_strategies")
       .insert({
@@ -131,11 +135,11 @@ async function handle(req: Request) {
     decision_type: "daily_research",
     inputs: ctx,
     output: {
-      generated: stockOnly.length,
+      generated: supported.length,
       promoted_ids: promoteIds,
       archived_ids: staleIds,
     },
-    rationale: `Morning research cycle. Market: SPY ${ctx.marketState.spyPct?.toFixed(2) ?? "?"}%, QQQ ${ctx.marketState.qqqPct?.toFixed(2) ?? "?"}%, VIX ${ctx.marketState.vixLevel?.toFixed(1) ?? "?"}. Reviewed ${recentHeadlines.length} headlines. Generated ${stockOnly.length} stock hypotheses, promoted top ${promoteIds.length} to live. Archived ${staleIds.length} stale strategies that didn't fire.`,
+    rationale: `Morning research cycle. Market: SPY ${ctx.marketState.spyPct?.toFixed(2) ?? "?"}%, QQQ ${ctx.marketState.qqqPct?.toFixed(2) ?? "?"}%, VIX ${ctx.marketState.vixLevel?.toFixed(1) ?? "?"}. Reviewed ${recentHeadlines.length} headlines. Generated ${supported.length} supported hypotheses (stocks + ES/NQ), promoted top ${promoteIds.length} to live. Archived ${staleIds.length} stale strategies that didn't fire.`,
   });
 
   return NextResponse.json({

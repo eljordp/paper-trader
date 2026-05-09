@@ -2,9 +2,16 @@ name: AI Trader
 
 on:
   schedule:
-    # Tick every 10 minutes during US market hours (Mon-Fri, 13:00-21:00 UTC ≈ 9am-5pm ET)
-    - cron: "*/10 13-21 * * 1-5"
-    # Daily research at market open (Mon-Fri, 13:00 UTC ≈ 9am ET)
+    # Tick every 10 minutes during the futures + stocks session.
+    # ES/NQ trade Sun 6pm ET → Fri 5pm ET with a 5pm-6pm ET daily maintenance break.
+    # In UTC (DST): Sun 22:00 → Fri 21:00, daily break 21:00-22:00 UTC.
+    # Sun evening (22-23 UTC = 6-8pm ET start of week)
+    - cron: "*/10 22-23 * * 0"
+    # Mon-Thu full day, except 21-22 UTC daily maintenance (5-6pm ET)
+    - cron: "*/10 0-20,22-23 * * 1-4"
+    # Fri until 5pm ET (21:00 UTC)
+    - cron: "*/10 0-20 * * 5"
+    # Daily research at stock-market open (Mon-Fri, 13:00 UTC ≈ 9am ET)
     - cron: "0 13 * * 1-5"
   workflow_dispatch:
     inputs:

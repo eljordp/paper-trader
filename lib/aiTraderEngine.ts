@@ -4,6 +4,7 @@ import { getCandles, getQuote } from "@/lib/yahoo";
 import type { StrategyRules, EntryRule, EntryEval } from "@/lib/aiLab";
 import { evalOteLong, evalOteShort, computeStdvOpenLevels, evalVwapBounceLong, evalVwapBounceShort } from "@/lib/aiLab";
 import { getAiTraderProfile } from "@/lib/aiTrader";
+import { getFuturesSpec, instrumentType, computeRealizedPnl, computeUnrealizedPnl } from "@/lib/instruments";
 
 type Sb = SupabaseClient;
 
@@ -29,6 +30,8 @@ type PositionRow = {
   stop_loss: number | null;
   take_profit: number | null;
   opened_at: string;
+  instrument_type: "stock" | "futures";
+  margin_held: number | null;
 };
 
 type AccountRow = {
@@ -195,13 +198,15 @@ async function snapshotEquity(sb: Sb, accountId: string) {
   if (!account) return;
   const { data: positions } = await sb
     .from("positions")
-    .select("ticker, shares, avg_cost, side")
+    .select("ticker, shares, avg_cost, side, instrument_type, margin_held")
     .eq("account_id", accountId);
   const list = (positions ?? []) as Array<{
     ticker: string;
     shares: number;
     avg_cost: number;
     side: "long" | "short";
+    instrument_type: "stock" | "futures";
+    margin_held: number | null;
   }>;
   let positionsValue = 0;
   let shortCredit = 0;
@@ -214,12 +219,28 @@ async function snapshotEquity(sb: Sb, accountId: string) {
     }
     for (const p of list) {
       const px = quotes[p.ticker]?.price ?? Number(p.avg_cost);
-      const v = Number(p.shares) * px;
-      if (p.side === "short") {
-        positionsValue -= v;
-        shortCredit += Number(p.shares) * Number(p.avg_cost);
+      if (p.instrument_type === "futures") {
+        // Futures contribution to equity = margin held (already deducted from
+        // cash on open) + unrealized PnL at the current mark
+        const futSpec = getFuturesSpec(p.ticker);
+        const pointValue = futSpec?.pointValue ?? 1;
+        const unrealized = computeUnrealizedPnl({
+          side: p.side,
+          instrumentType: "futures",
+          entry: Number(p.avg_cost),
+          current: px,
+          qty: Number(p.shares),
+          pointValue,
+        });
+        positionsValue += Number(p.margin_held ?? 0) + unrealized;
       } else {
-        positionsValue += v;
+        const v = Number(p.shares) * px;
+        if (p.side === "short") {
+          positionsValue -= v;
+          shortCredit += Number(p.shares) * Number(p.avg_cost);
+        } else {
+          positionsValue += v;
+        }
       }
     }
   }
@@ -241,8 +262,26 @@ async function closeLong(
   reason: "stop" | "target" | "time_exit",
   strategyId: string | null,
 ): Promise<number> {
-  const realizedPnl = Number(pos.shares) * (price - Number(pos.avg_cost));
-  const total = Number(pos.shares) * price;
+  const isFutures = pos.instrument_type === "futures";
+  const futSpec = isFutures ? getFuturesSpec(pos.ticker) : null;
+  const pointValue = futSpec?.pointValue ?? 1;
+
+  const realizedPnl = computeRealizedPnl({
+    side: "long",
+    instrumentType: pos.instrument_type,
+    entry: Number(pos.avg_cost),
+    exit: price,
+    qty: Number(pos.shares),
+    pointValue,
+  });
+
+  // Cash impact:
+  //  - Stocks long: cash += qty * exit_price (sell receives proceeds)
+  //  - Futures long: cash += margin_held + realized_pnl (margin returned + PnL settled)
+  const cashDelta = isFutures
+    ? Number(pos.margin_held ?? 0) + realizedPnl
+    : Number(pos.shares) * price;
+
   await sb.from("positions").delete().eq("id", pos.id);
   await sb.from("trades").insert({
     account_id: account.id,
@@ -250,15 +289,18 @@ async function closeLong(
     side: "sell",
     shares: pos.shares,
     price,
-    total,
+    total: Number(pos.shares) * price,
     realized_pnl: realizedPnl,
     triggered_by: reason === "time_exit" ? "manual" : reason,
     ai_strategy_id: strategyId,
     notes: `AI auto-exit: ${reason}`,
+    instrument_type: pos.instrument_type,
+    contracts: isFutures ? Number(pos.shares) : null,
+    point_value: isFutures ? pointValue : null,
   });
   await sb
     .from("accounts")
-    .update({ cash: Number(account.cash) + total })
+    .update({ cash: Number(account.cash) + cashDelta })
     .eq("id", account.id);
   return realizedPnl;
 }
@@ -271,8 +313,26 @@ async function closeShort(
   reason: "stop" | "target" | "time_exit",
   strategyId: string | null,
 ): Promise<number> {
-  const realizedPnl = Number(pos.shares) * (Number(pos.avg_cost) - price);
-  const cost = Number(pos.shares) * price;
+  const isFutures = pos.instrument_type === "futures";
+  const futSpec = isFutures ? getFuturesSpec(pos.ticker) : null;
+  const pointValue = futSpec?.pointValue ?? 1;
+
+  const realizedPnl = computeRealizedPnl({
+    side: "short",
+    instrumentType: pos.instrument_type,
+    entry: Number(pos.avg_cost),
+    exit: price,
+    qty: Number(pos.shares),
+    pointValue,
+  });
+
+  // Cash impact:
+  //  - Stocks short: cash -= qty * exit_price (cover pays out)
+  //  - Futures short: cash += margin_held + realized_pnl (margin returned + PnL settled)
+  const cashDelta = isFutures
+    ? Number(pos.margin_held ?? 0) + realizedPnl
+    : -Number(pos.shares) * price;
+
   await sb.from("positions").delete().eq("id", pos.id);
   await sb.from("trades").insert({
     account_id: account.id,
@@ -280,15 +340,18 @@ async function closeShort(
     side: "cover",
     shares: pos.shares,
     price,
-    total: cost,
+    total: Number(pos.shares) * price,
     realized_pnl: realizedPnl,
     triggered_by: reason === "time_exit" ? "manual" : reason,
     ai_strategy_id: strategyId,
     notes: `AI auto-exit: ${reason}`,
+    instrument_type: pos.instrument_type,
+    contracts: isFutures ? Number(pos.shares) : null,
+    point_value: isFutures ? pointValue : null,
   });
   await sb
     .from("accounts")
-    .update({ cash: Number(account.cash) - cost })
+    .update({ cash: Number(account.cash) + cashDelta })
     .eq("id", account.id);
   return realizedPnl;
 }
@@ -300,7 +363,7 @@ async function processExits(
   const closed: TickResult["exitsClosed"] = [];
   const { data: positions } = await sb
     .from("positions")
-    .select("id, account_id, ticker, shares, avg_cost, side, stop_loss, take_profit, opened_at")
+    .select("id, account_id, ticker, shares, avg_cost, side, stop_loss, take_profit, opened_at, instrument_type, margin_held")
     .eq("account_id", account.id);
   const list = (positions ?? []) as PositionRow[];
   if (list.length === 0) return closed;
@@ -421,8 +484,9 @@ async function processEntries(
     if ((openCount ?? 0) >= maxConcurrent) continue;
 
     for (const ticker of s.instruments) {
-      // Skip futures — engine is stocks-only for the always-on AI Trader
-      if (ticker.includes("=F")) continue;
+      const futSpec = getFuturesSpec(ticker);
+      const isFutures = futSpec != null;
+      const instType = instrumentType(ticker);
 
       let candles;
       try {
@@ -489,14 +553,32 @@ async function processEntries(
       const accountRiskPct = s.max_account_risk_pct ?? 1.0;
       const riskBudget =
         (Number(account.starting_cash) * accountRiskPct) / 100;
-      const qty = Math.floor((riskBudget / stopDistance) * 100) / 100;
-      if (qty <= 0) continue;
+
+      // Sizing diverges by instrument:
+      //  - Stocks: fractional shares allowed; qty = riskBudget / stopDistance
+      //  - Futures: whole contracts only; qty = floor(riskBudget / (stopDistance * pointValue))
+      let qty: number;
+      let marginHeld = 0;
+      if (isFutures && futSpec) {
+        const riskPerContract = stopDistance * futSpec.pointValue;
+        if (riskPerContract <= 0) continue;
+        qty = Math.floor(riskBudget / riskPerContract);
+        if (qty < 1) continue; // not enough room for even 1 contract at this stop distance
+        marginHeld = qty * futSpec.dayTradeMargin;
+      } else {
+        qty = Math.floor((riskBudget / stopDistance) * 100) / 100;
+        if (qty <= 0) continue;
+      }
 
       // Cash check
-      const cashRequired =
-        s.rules.side === "long"
+      //  - Stocks long: need cash >= qty * entry
+      //  - Stocks short: need cash >= qty * entry * 0.5 (margin proxy)
+      //  - Futures (long or short): need cash >= margin held
+      const cashRequired = isFutures
+        ? marginHeld
+        : s.rules.side === "long"
           ? qty * entryPrice
-          : qty * entryPrice * 0.5; // 50% margin for shorts
+          : qty * entryPrice * 0.5;
       if (cashRequired > Number(account.cash)) continue;
 
       // Insert position
@@ -508,14 +590,13 @@ async function processEntries(
         stop_loss: stopPrice,
         take_profit: targetPrice,
         side: s.rules.side,
-        instrument_type: "stock",
-        margin_held: 0,
+        instrument_type: instType,
+        margin_held: marginHeld,
       });
 
       // Insert trade
       const tradeSide = s.rules.side === "long" ? "buy" : "short";
-      const total =
-        s.rules.side === "long" ? qty * entryPrice : qty * entryPrice;
+      const total = qty * entryPrice;
       const { data: tradeRow } = await sb
         .from("trades")
         .insert({
@@ -528,14 +609,22 @@ async function processEntries(
           notes: `AI: ${s.name}`,
           triggered_by: "manual",
           ai_strategy_id: s.id,
-          instrument_type: "stock",
+          instrument_type: instType,
+          contracts: isFutures ? qty : null,
+          point_value: isFutures && futSpec ? futSpec.pointValue : null,
         })
         .select("id")
         .single();
 
       // Update cash
-      const cashDelta =
-        s.rules.side === "long" ? -qty * entryPrice : qty * entryPrice; // short receives proceeds
+      //  - Stocks long: cash -= qty * entry
+      //  - Stocks short: cash += qty * entry (proceeds)
+      //  - Futures: cash -= margin held (margin model — symmetric for long/short)
+      const cashDelta = isFutures
+        ? -marginHeld
+        : s.rules.side === "long"
+          ? -qty * entryPrice
+          : qty * entryPrice;
       await sb
         .from("accounts")
         .update({ cash: Number(account.cash) + cashDelta })
