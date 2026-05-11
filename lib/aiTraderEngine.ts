@@ -577,9 +577,23 @@ async function processEntries(
       try {
         candles = await getCandles(ticker, CANDLE_RANGE);
       } catch {
+        pulses.push({
+          strategy: s.name,
+          ticker,
+          status: `${ticker} quote fetch failed`,
+          closenessPct: 0,
+        });
         continue;
       }
-      if (!candles || candles.length < 50) continue;
+      if (!candles || candles.length < 50) {
+        pulses.push({
+          strategy: s.name,
+          ticker,
+          status: `${ticker} not enough history yet`,
+          closenessPct: 0,
+        });
+        continue;
+      }
 
       const lastCandle = candles[candles.length - 1];
       if (s.rules.time_window_utc) {
@@ -587,21 +601,26 @@ async function processEntries(
         if (
           hr < s.rules.time_window_utc[0] ||
           hr >= s.rules.time_window_utc[1]
-        )
+        ) {
+          pulses.push({
+            strategy: s.name,
+            ticker,
+            status: `${ticker} outside time window ${s.rules.time_window_utc[0]}-${s.rules.time_window_utc[1]} UTC (now ${hr})`,
+            closenessPct: 0,
+          });
           continue;
+        }
       }
 
       const ruleStatus = describeRuleStatus(ticker, s.rules.entry, candles);
       const entryEval = evalEntryLastCandle(s.rules.entry, candles);
       if (!entryEval.hit) {
-        if (ruleStatus) {
-          pulses.push({
-            strategy: s.name,
-            ticker,
-            status: ruleStatus.desc,
-            closenessPct: ruleStatus.closenessPct,
-          });
-        }
+        pulses.push({
+          strategy: s.name,
+          ticker,
+          status: ruleStatus?.desc ?? `${ticker} ${s.rules.entry.type} watched`,
+          closenessPct: ruleStatus?.closenessPct ?? 0,
+        });
         continue;
       }
 
