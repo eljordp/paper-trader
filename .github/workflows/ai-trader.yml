@@ -1,58 +1,185 @@
 name: AI Trader
 
+# Long-running workflow pattern.
+#
+# Why: GitHub's scheduler throttles `*/10` cron schedules on free-tier — runs
+# get dropped or delayed by 1-2h, leaving the AI trader blind for most of the
+# session. So instead of asking GH to fire 40+ times a day, we fire schedule
+# events only a handful of times a day. Each scheduled run starts a job that
+# internally sleeps and curls the endpoint every 10 minutes for the duration
+# of its session. Inside-the-job sleep is precise; the schedule event is the
+# only thing GH throttles.
+#
+# Sessions (UTC):
+#   research-open      — 13:00 Mon-Fri (9am ET) — one-shot research call
+#   session-stocks     — 13:30 Mon-Fri (9:30am ET) — ticks for 6h 30m
+#                        covers the full US stock session 9:30am-4:00pm ET
+#   session-evening    — 20:00 Mon-Thu (4pm ET) — ticks for 1h
+#                        covers final hour + futures pre-maintenance
+#   session-futures-pm — 22:00 Mon-Thu (6pm ET) — ticks for 2h
+#                        post-maintenance futures session
+#   session-sun-evening — 22:00 Sun (6pm ET) — futures week kickoff, 2h
+#
+# Each schedule is duplicated with a 5-min-delayed entry so missed firings
+# from GH throttling get a second shot.
+
 on:
   schedule:
-    # Tick every 10 minutes during the futures + stocks session.
-    # ES/NQ trade Sun 6pm ET → Fri 5pm ET with a 5pm-6pm ET daily maintenance break.
-    # In UTC (DST): Sun 22:00 → Fri 21:00, daily break 21:00-22:00 UTC.
-    # Sun evening (22-23 UTC = 6-8pm ET start of week)
-    - cron: "*/10 22-23 * * 0"
-    # Mon-Thu full day, except 21-22 UTC daily maintenance (5-6pm ET)
-    - cron: "*/10 0-20,22-23 * * 1-4"
-    # Fri until 5pm ET (21:00 UTC)
-    - cron: "*/10 0-20 * * 5"
-    # Daily research at stock-market open (Mon-Fri, 13:00 UTC ≈ 9am ET)
+    # Research at market open (9am ET)
     - cron: "0 13 * * 1-5"
+    - cron: "5 13 * * 1-5"  # fallback if first fires late/missed
+
+    # Stocks session (9:30am ET → 4:00pm ET = 6h 30m)
+    - cron: "30 13 * * 1-5"
+    - cron: "35 13 * * 1-5"  # fallback
+
+    # Evening / futures pre-maintenance (4pm ET → 5pm ET)
+    - cron: "0 20 * * 1-4"
+    - cron: "5 20 * * 1-4"  # fallback
+
+    # Futures post-maintenance (6pm ET → 8pm ET — overnight optional)
+    - cron: "0 22 * * 1-4"
+    - cron: "5 22 * * 1-4"  # fallback
+
+    # Sunday futures kickoff
+    - cron: "0 22 * * 0"
+    - cron: "5 22 * * 0"  # fallback
+
   workflow_dispatch:
     inputs:
       job:
         description: "Which job to run"
         required: true
-        default: "tick"
+        default: "tick-once"
         type: choice
         options:
-          - tick
-          - research
+          - tick-once
+          - research-once
+          - session-now
 
 env:
   BASE_URL: https://paper-trader-two-eta.vercel.app
 
+# Concurrency: never run two sessions of the same kind at the same time.
+# If a fallback schedule fires while the primary is already running, skip it.
+concurrency:
+  group: ai-trader-${{ github.event.schedule || github.event.inputs.job || 'manual' }}
+  cancel-in-progress: false
+
 jobs:
-  trigger:
+  run:
     runs-on: ubuntu-latest
+    timeout-minutes: 400
     steps:
-      - name: Decide which job to run
-        id: which
+      - name: Resolve session kind + duration
+        id: resolve
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          EVENT: ${{ github.event_name }}
+          MANUAL_JOB: ${{ github.event.inputs.job }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "job=${{ github.event.inputs.job }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 13 * * 1-5" ]; then
-            echo "job=research" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # Default: short tick. Overridden below per schedule.
+          KIND="tick-once"
+          DURATION_MIN=0
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            case "$MANUAL_JOB" in
+              research-once) KIND="research-once" ;;
+              session-now)   KIND="session"; DURATION_MIN=60 ;;
+              *)             KIND="tick-once" ;;
+            esac
           else
-            echo "job=tick" >> "$GITHUB_OUTPUT"
+            case "$SCHEDULE" in
+              "0 13 * * 1-5"|"5 13 * * 1-5")
+                KIND="research-once"
+                ;;
+              "30 13 * * 1-5"|"35 13 * * 1-5")
+                KIND="session"; DURATION_MIN=390  # 6h 30m, covers 9:30am → 4:00pm ET
+                ;;
+              "0 20 * * 1-4"|"5 20 * * 1-4")
+                KIND="session"; DURATION_MIN=60   # 4pm → 5pm ET pre-maintenance
+                ;;
+              "0 22 * * 1-4"|"5 22 * * 1-4")
+                KIND="session"; DURATION_MIN=120  # 6pm → 8pm ET post-maintenance
+                ;;
+              "0 22 * * 0"|"5 22 * * 0")
+                KIND="session"; DURATION_MIN=120  # Sunday futures kickoff
+                ;;
+            esac
           fi
 
-      - name: Hit AI Trader endpoint
+          echo "kind=$KIND"           >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION_MIN" >> "$GITHUB_OUTPUT"
+          echo "Resolved: KIND=$KIND DURATION_MIN=$DURATION_MIN"
+
+      - name: Guard CRON_SECRET
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          JOB: ${{ steps.which.outputs.job }}
         run: |
           if [ -z "$CRON_SECRET" ]; then
             echo "::error::CRON_SECRET secret not set on this repo"
             exit 1
           fi
+
+      - name: Research one-shot
+        if: steps.resolve.outputs.kind == 'research-once'
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer $CRON_SECRET" \
-            "$BASE_URL/api/cron/ai-trader-$JOB" \
+            "$BASE_URL/api/cron/ai-trader-research" \
             | tee /tmp/result.json
           echo
+
+      - name: Tick one-shot
+        if: steps.resolve.outputs.kind == 'tick-once'
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/ai-trader-tick" \
+            | tee /tmp/result.json
+          echo
+
+      - name: Session — tick every 10 min for duration
+        if: steps.resolve.outputs.kind == 'session'
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DURATION_MIN: ${{ steps.resolve.outputs.duration }}
+        run: |
+          set -uo pipefail
+          INTERVAL=600  # 10 minutes
+          END=$(( $(date +%s) + DURATION_MIN * 60 ))
+          TICK=0
+          echo "Session start. Duration=${DURATION_MIN}min Interval=${INTERVAL}s End=$(date -u -d "@$END" 2>/dev/null || date -u -r "$END")"
+
+          while [ "$(date +%s)" -lt "$END" ]; do
+            TICK=$((TICK + 1))
+            START_TICK=$(date +%s)
+            echo "::group::Tick #$TICK at $(date -u +%FT%TZ)"
+            HTTP_CODE=$(curl -sS -o /tmp/tick.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              "$BASE_URL/api/cron/ai-trader-tick" || echo "000")
+            echo "HTTP $HTTP_CODE"
+            cat /tmp/tick.json 2>/dev/null || true
+            echo
+            echo "::endgroup::"
+
+            # Pace exactly INTERVAL seconds between starts, regardless of how
+            # long the request took. If the call took longer than INTERVAL,
+            # fire the next one immediately.
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START_TICK))
+            SLEEP_FOR=$((INTERVAL - ELAPSED))
+            if [ "$SLEEP_FOR" -gt 0 ] && [ "$NOW" -lt "$END" ]; then
+              # Don't oversleep past END
+              REMAINING=$((END - NOW))
+              if [ "$SLEEP_FOR" -gt "$REMAINING" ]; then SLEEP_FOR=$REMAINING; fi
+              sleep "$SLEEP_FOR"
+            fi
+          done
+
+          echo "Session done. Total ticks: $TICK"
