@@ -166,6 +166,84 @@ function evalEntryLastCandle(
   }
 }
 
+// Describe how close a rule is to triggering on the current candle. Returned
+// values are short, human-readable strings used in tick_pulse decision rows
+// so the public page can show "what the brain is watching" instead of going
+// silent between trades. closenessPct: 0 = far/wrong-direction, 100 = trigger.
+type RuleStatus = {
+  desc: string;        // e.g. "QQQ 15-min change +0.18% / needs +0.50%"
+  closenessPct: number;
+};
+
+function describeRuleStatus(
+  ticker: string,
+  rule: EntryRule,
+  candles: Array<{ time: number; open: number; high: number; low: number; close: number; volume?: number }>,
+): RuleStatus | null {
+  if (candles.length < 2) return null;
+  const i = candles.length - 1;
+  const c = candles[i];
+  switch (rule.type) {
+    case "price_drop": {
+      const bars = Math.max(1, Math.floor(rule.lookback_minutes / 5));
+      const past = candles[i - bars];
+      if (!past) return null;
+      const pct = ((c.close - past.close) / past.close) * 100;
+      const need = rule.magnitude_pct; // negative
+      const closeness = need >= 0 ? 0 : Math.max(0, Math.min(100, (pct / need) * 100));
+      return {
+        desc: `${ticker} ${rule.lookback_minutes}m chg ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}% / need ≤ ${need.toFixed(2)}%`,
+        closenessPct: closeness,
+      };
+    }
+    case "price_pop": {
+      const bars = Math.max(1, Math.floor(rule.lookback_minutes / 5));
+      const past = candles[i - bars];
+      if (!past) return null;
+      const pct = ((c.close - past.close) / past.close) * 100;
+      const need = rule.magnitude_pct; // positive
+      const closeness = need <= 0 ? 0 : Math.max(0, Math.min(100, (pct / need) * 100));
+      return {
+        desc: `${ticker} ${rule.lookback_minutes}m chg ${pct >= 0 ? "+" : ""}${pct.toFixed(2)}% / need ≥ +${need.toFixed(2)}%`,
+        closenessPct: closeness,
+      };
+    }
+    case "breakout_above": {
+      if (i < rule.lookback_bars) return null;
+      let high = -Infinity;
+      for (let j = i - rule.lookback_bars; j < i; j++)
+        if (candles[j].high > high) high = candles[j].high;
+      const gapPct = ((c.close - high) / high) * 100;
+      // closeness: at high = 100, 1% below = ~0
+      const closeness = Math.max(0, Math.min(100, 100 + gapPct * 100));
+      return {
+        desc: `${ticker} px $${c.close.toFixed(2)} / ${rule.lookback_bars}-bar high $${high.toFixed(2)} (${gapPct >= 0 ? "+" : ""}${gapPct.toFixed(2)}%)`,
+        closenessPct: closeness,
+      };
+    }
+    case "breakdown_below": {
+      if (i < rule.lookback_bars) return null;
+      let low = Infinity;
+      for (let j = i - rule.lookback_bars; j < i; j++)
+        if (candles[j].low < low) low = candles[j].low;
+      const gapPct = ((c.close - low) / low) * 100;
+      const closeness = Math.max(0, Math.min(100, 100 - gapPct * 100));
+      return {
+        desc: `${ticker} px $${c.close.toFixed(2)} / ${rule.lookback_bars}-bar low $${low.toFixed(2)} (${gapPct >= 0 ? "+" : ""}${gapPct.toFixed(2)}%)`,
+        closenessPct: closeness,
+      };
+    }
+    default:
+      // OTE / stdv / VWAP / RSI / MA-cross: too contextual for a single-line
+      // closeness gauge. Just label the rule type so the pulse still shows
+      // the brain looked at it.
+      return {
+        desc: `${ticker} watching ${rule.type}`,
+        closenessPct: 0,
+      };
+  }
+}
+
 async function logDecision(
   sb: Sb,
   userId: string,
@@ -452,6 +530,13 @@ async function processEntries(
   account: AccountRow,
 ): Promise<TickResult["entriesFired"]> {
   const fired: TickResult["entriesFired"] = [];
+  type PulseEntry = {
+    strategy: string;
+    ticker: string;
+    status: string;
+    closenessPct: number;
+  };
+  const pulses: PulseEntry[] = [];
 
   const { data: liveStrategies } = await sb
     .from("ai_strategies")
@@ -506,8 +591,19 @@ async function processEntries(
           continue;
       }
 
+      const ruleStatus = describeRuleStatus(ticker, s.rules.entry, candles);
       const entryEval = evalEntryLastCandle(s.rules.entry, candles);
-      if (!entryEval.hit) continue;
+      if (!entryEval.hit) {
+        if (ruleStatus) {
+          pulses.push({
+            strategy: s.name,
+            ticker,
+            status: ruleStatus.desc,
+            closenessPct: ruleStatus.closenessPct,
+          });
+        }
+        continue;
+      }
 
       // Don't double-enter — skip if any trade for this strategy+ticker fired
       // in the last hour
@@ -663,6 +759,48 @@ async function processEntries(
         ticker,
         side: s.rules.side,
         price: entryPrice,
+      });
+    }
+  }
+
+  // Tick pulse: rate-limited pulse row showing what the brain is watching,
+  // so the public page shows live activity between trades. Rate-limited to
+  // ~once/hour OR fired immediately if any setup is within 20% of triggering
+  // (so prospects see the AI getting close, not just routine heartbeats).
+  if (fired.length === 0 && pulses.length > 0) {
+    pulses.sort((a, b) => b.closenessPct - a.closenessPct);
+    const topCloseness = pulses[0]?.closenessPct ?? 0;
+    const NEAR_TRIGGER_PCT = 80;
+    let shouldLog = topCloseness >= NEAR_TRIGGER_PCT;
+    if (!shouldLog) {
+      const hourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
+      const { data: recent } = await sb
+        .from("ai_decisions")
+        .select("id")
+        .eq("user_id", account.user_id)
+        .eq("decision_type", "tick_pulse")
+        .gte("created_at", hourAgo)
+        .limit(1);
+      shouldLog = (recent?.length ?? 0) === 0;
+    }
+    if (shouldLog) {
+      const top = pulses.slice(0, 4);
+      const summary = top
+        .map(
+          (p) =>
+            `${p.strategy} → ${p.status} [${Math.round(p.closenessPct)}% to trigger]`,
+        )
+        .join(" · ");
+      const watchCount = pulses.length;
+      const headline =
+        topCloseness >= NEAR_TRIGGER_PCT
+          ? `Tick: ${watchCount} setup${watchCount === 1 ? "" : "s"} watched, top is CLOSE (${Math.round(topCloseness)}%).`
+          : `Tick: watching ${watchCount} setup${watchCount === 1 ? "" : "s"}, none triggered.`;
+      await logDecision(sb, account.user_id, {
+        decision_type: "tick_pulse",
+        inputs: { watching: pulses },
+        output: { fired: 0, watched: watchCount, topCloseness },
+        rationale: `${headline} ${summary}`,
       });
     }
   }

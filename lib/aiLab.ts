@@ -69,6 +69,20 @@ Each hypothesis must include:
   * stdv_open_above / stdv_open_below: Triggers when price moves k standard deviations above/below today's 9:30 ET open, using the trailing N-day stdv of intraday excursions. Use as breakout/expansion signals on trending tapes. Params: lookback_days (default 20), k_sigma (default 1.0 — try 0.5 for earlier signals, 1.5 for stronger expansion).
   * vwap_bounce_long / vwap_bounce_short: Session VWAP as SUPPORT/RESISTANCE within an established regime. Bounce long fires when price held above VWAP for min_bars_in_regime (default 6), retraced to touch VWAP within touch_within_bars (default 3), and current bar closes back up — VWAP acted as support. Mirror for short. Best for trend-day continuation entries on the retest. Stop is auto-set just past the touch low/high (structural). Params: min_bars_in_regime (default 6), touch_within_bars (default 3), touch_distance_pct (default 0.05 — how close to VWAP counts as a "touch"). NOTE: bare VWAP crosses without confirmation (no retest, no regime hold) get whipsawed all day — never propose a "cross VWAP and enter" rule.
 
+CRITICAL — VOLATILITY-SCALE YOUR THRESHOLDS:
+A rule that demands +0.5% in 15 min on a low-vol day (VIX<15, expected daily move <0.6%) will NEVER trigger — you'd be asking for ~80% of the day's range in 15 minutes. The "Expected daily move" in the context tells you what's actually achievable today. Calibrate price_drop / price_pop magnitudes by lookback window:
+
+  * 5-15 min lookback:  magnitude ≈ 0.15-0.30× expected daily move
+  * 15-30 min lookback: magnitude ≈ 0.25-0.50× expected daily move
+  * 30-60 min lookback: magnitude ≈ 0.40-0.80× expected daily move
+  * 60+ min lookback:   magnitude ≈ 0.60-1.20× expected daily move
+
+Worked example — if expected daily move is 0.80%, a "fade the morning pop" rule with 15-min lookback should use magnitude_pct around +0.15 to +0.25, NOT +0.5. On the other end, if VIX > 25 and expected daily move is 1.8%, the same 15-min rule should use +0.3 to +0.5.
+
+For breakout_above / breakdown_below with N-bar lookbacks, prefer lookback_bars of 6-24 (30 min to 2 hours) on 5m bars — long enough to filter noise, short enough to fire within the session.
+
+For exits (stop_loss_pct / take_profit_pct), scale similarly. Stops should be tight enough that R/R ≥ 1.5, and the trip distance must be reachable in the lookback window of the entry rule, not multiples of it.
+
 Output STRICT JSON, exactly this shape:
 {
   "strategies": [
@@ -95,9 +109,27 @@ export type GenerationContext = {
   marketState: { spyPct: number | null; qqqPct: number | null; vixLevel: number | null };
 };
 
+// VIX is an annualized 1-sigma vol expectation in percent. Convert to a 1-day
+// expected move: vix / sqrt(252). Slightly inflate for QQQ (~1.15x SPY beta)
+// so the brain doesn't under-size Nasdaq triggers on quiet SPX days.
+export function impliedDailyMovePct(vixLevel: number | null, scale = 1.0): number | null {
+  if (vixLevel == null || vixLevel <= 0) return null;
+  return (vixLevel / Math.sqrt(252)) * scale;
+}
+
 export async function generateHypotheses(ctx: GenerationContext): Promise<ProposedStrategy[]> {
   const oai = client();
   if (!oai) return [];
+  const expectedMoveSpy = impliedDailyMovePct(ctx.marketState.vixLevel);
+  const expectedMoveQqq = impliedDailyMovePct(ctx.marketState.vixLevel, 1.15);
+  const volRegime =
+    ctx.marketState.vixLevel == null
+      ? "unknown"
+      : ctx.marketState.vixLevel < 14
+        ? "LOW — quiet tape, ranges tight, magnitudes must be small"
+        : ctx.marketState.vixLevel < 22
+          ? "NORMAL — standard intraday ranges"
+          : "HIGH — wide ranges, larger magnitudes acceptable";
   const prompt = `Date: ${ctx.todayDate}
 Account tier: ${ctx.userTier}
 
@@ -105,6 +137,12 @@ MARKET STATE TODAY:
   SPY: ${ctx.marketState.spyPct != null ? (ctx.marketState.spyPct >= 0 ? "+" : "") + ctx.marketState.spyPct.toFixed(2) + "%" : "n/a"}
   QQQ: ${ctx.marketState.qqqPct != null ? (ctx.marketState.qqqPct >= 0 ? "+" : "") + ctx.marketState.qqqPct.toFixed(2) + "%" : "n/a"}
   VIX: ${ctx.marketState.vixLevel != null ? ctx.marketState.vixLevel.toFixed(1) : "n/a"}
+
+VOLATILITY REGIME: ${volRegime}
+Expected 1-day move (1-sigma, from VIX):
+  SPY ≈ ${expectedMoveSpy != null ? "±" + expectedMoveSpy.toFixed(2) + "%" : "n/a"}
+  QQQ ≈ ${expectedMoveQqq != null ? "±" + expectedMoveQqq.toFixed(2) + "%" : "n/a"}
+Use these numbers to size your price_drop / price_pop magnitudes — see the calibration table in the system prompt. Rules that demand more than 0.5× expected daily move within 15 minutes are almost never going to fire.
 
 RECENT HEADLINES:
 ${ctx.recentHeadlines.slice(0, 8).map((h, i) => `  ${i + 1}. [${h.minutesAgo}m ago] ${h.title} ${h.tickers.length ? "(" + h.tickers.join(", ") + ")" : ""}`).join("\n")}
