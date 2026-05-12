@@ -33,15 +33,25 @@ on:
     - cron: "30 13 * * 1-5"
     - cron: "35 13 * * 1-5"  # fallback
 
-    # Evening / futures pre-maintenance (4pm ET → 5pm ET)
-    - cron: "0 20 * * 1-4"
-    - cron: "5 20 * * 1-4"  # fallback
+    # Daily reflection at stocks-close (4:05pm ET) — runs after session ends
+    - cron: "5 20 * * 1-5"
+    - cron: "10 20 * * 1-5"  # fallback
+
+    # Evening / futures pre-maintenance (4:15pm ET → 5pm ET, shortened to 45m
+    # so the daily reflection at 4:05 has cash/position visibility from the
+    # stocks session before another session starts pushing in trades)
+    - cron: "15 20 * * 1-4"
+    - cron: "20 20 * * 1-4"  # fallback
 
     # Futures post-maintenance (6pm ET → 8pm ET — overnight optional)
     - cron: "0 22 * * 1-4"
     - cron: "5 22 * * 1-4"  # fallback
 
-    # Sunday futures kickoff
+    # Weekly review (Sunday 5pm ET / 21:00 UTC — before futures kickoff)
+    - cron: "0 21 * * 0"
+    - cron: "5 21 * * 0"  # fallback
+
+    # Sunday futures kickoff (6pm ET / 22:00 UTC)
     - cron: "0 22 * * 0"
     - cron: "5 22 * * 0"  # fallback
 
@@ -56,6 +66,8 @@ on:
           - tick-once
           - research-once
           - session-now
+          - reflect-once
+          - weekly-review-once
 
 env:
   BASE_URL: https://paper-trader-two-eta.vercel.app
@@ -85,9 +97,11 @@ jobs:
 
           if [ "$EVENT" = "workflow_dispatch" ]; then
             case "$MANUAL_JOB" in
-              research-once) KIND="research-once" ;;
-              session-now)   KIND="session"; DURATION_MIN=60 ;;
-              *)             KIND="tick-once" ;;
+              research-once)       KIND="research-once" ;;
+              session-now)         KIND="session"; DURATION_MIN=60 ;;
+              reflect-once)        KIND="reflect-once" ;;
+              weekly-review-once)  KIND="weekly-review-once" ;;
+              *)                   KIND="tick-once" ;;
             esac
           else
             case "$SCHEDULE" in
@@ -97,11 +111,17 @@ jobs:
               "30 13 * * 1-5"|"35 13 * * 1-5")
                 KIND="session"; DURATION_MIN=390  # 6h 30m, covers 9:30am → 4:00pm ET
                 ;;
-              "0 20 * * 1-4"|"5 20 * * 1-4")
-                KIND="session"; DURATION_MIN=60   # 4pm → 5pm ET pre-maintenance
+              "5 20 * * 1-5"|"10 20 * * 1-5")
+                KIND="reflect-once"
+                ;;
+              "15 20 * * 1-4"|"20 20 * * 1-4")
+                KIND="session"; DURATION_MIN=45  # 4:15pm → 5pm ET pre-maintenance
                 ;;
               "0 22 * * 1-4"|"5 22 * * 1-4")
                 KIND="session"; DURATION_MIN=120  # 6pm → 8pm ET post-maintenance
+                ;;
+              "0 21 * * 0"|"5 21 * * 0")
+                KIND="weekly-review-once"
                 ;;
               "0 22 * * 0"|"5 22 * * 0")
                 KIND="session"; DURATION_MIN=120  # Sunday futures kickoff
@@ -141,6 +161,28 @@ jobs:
           curl --fail-with-body -sS -X POST \
             -H "Authorization: Bearer $CRON_SECRET" \
             "$BASE_URL/api/cron/ai-trader-tick" \
+            | tee /tmp/result.json
+          echo
+
+      - name: Daily reflection one-shot
+        if: steps.resolve.outputs.kind == 'reflect-once'
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/ai-trader-reflect" \
+            | tee /tmp/result.json
+          echo
+
+      - name: Weekly review one-shot
+        if: steps.resolve.outputs.kind == 'weekly-review-once'
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/ai-trader-weekly-review" \
             | tee /tmp/result.json
           echo
 

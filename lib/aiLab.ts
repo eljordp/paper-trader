@@ -107,6 +107,11 @@ export type GenerationContext = {
   userTier: string;
   recentHeadlines: Array<{ title: string; tickers: string[]; minutesAgo: number }>;
   marketState: { spyPct: number | null; qqqPct: number | null; vixLevel: number | null };
+  // Lessons carried forward from yesterday's reflection + this week's pattern
+  // detector. The brain reads these and is expected to either honor them or
+  // explicitly disagree. Keep each lesson short — one sentence — so the model
+  // can hold all of them in attention.
+  recentLessons?: string[];
 };
 
 // VIX is an annualized 1-sigma vol expectation in percent. Convert to a 1-day
@@ -144,7 +149,14 @@ Expected 1-day move (1-sigma, from VIX):
   QQQ ≈ ${expectedMoveQqq != null ? "±" + expectedMoveQqq.toFixed(2) + "%" : "n/a"}
 Use these numbers to size your price_drop / price_pop magnitudes — see the calibration table in the system prompt. Rules that demand more than 0.5× expected daily move within 15 minutes are almost never going to fire.
 
-RECENT HEADLINES:
+${
+  ctx.recentLessons && ctx.recentLessons.length > 0
+    ? `LESSONS CARRIED FORWARD (from yesterday's reflection + this week's pattern detector — apply these unless you have a stronger reason not to):
+${ctx.recentLessons.map((l, i) => `  ${i + 1}. ${l}`).join("\n")}
+
+`
+    : ""
+}RECENT HEADLINES:
 ${ctx.recentHeadlines.slice(0, 8).map((h, i) => `  ${i + 1}. [${h.minutesAgo}m ago] ${h.title} ${h.tickers.length ? "(" + h.tickers.join(", ") + ")" : ""}`).join("\n")}
 
 Propose 5 strategies. Return JSON only.`;

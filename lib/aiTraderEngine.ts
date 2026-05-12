@@ -519,6 +519,89 @@ async function processExits(
           ? `Closed ${pos.ticker} ${pos.side} at $${px.toFixed(2)} after holding ${strategy?.rules.exit.time_exit_bars ?? DEFAULT_TIME_EXIT_BARS} bars without hitting stop or target. P&L ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}.`
           : `Closed ${pos.ticker} ${pos.side} at $${px.toFixed(2)} — ${reason === "stop" ? "stop loss hit" : "take profit hit"}. P&L ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}.`,
     });
+
+    // Post-trade review: replay candles between entry and exit, compute MFE/MAE,
+    // hold time, and a verdict on whether the thesis held. Stored as its own
+    // decision row so the page surfaces "what we learned" alongside the exit.
+    try {
+      const entryAt = new Date(seed?.created_at ?? pos.opened_at);
+      const entryPx = Number(pos.avg_cost);
+      const tradeCandles = await getCandles(pos.ticker, CANDLE_RANGE).catch(() => null);
+      if (tradeCandles && tradeCandles.length > 0) {
+        const entryMs = entryAt.getTime();
+        const exitMs = Date.now();
+        const window = tradeCandles.filter(
+          (b) => b.time * 1000 >= entryMs && b.time * 1000 <= exitMs,
+        );
+        let mfe = 0; // best PnL pct seen during the trade
+        let mae = 0; // worst PnL pct seen during the trade
+        for (const b of window) {
+          const movePct =
+            pos.side === "long"
+              ? ((b.high - entryPx) / entryPx) * 100
+              : ((entryPx - b.low) / entryPx) * 100;
+          const adversePct =
+            pos.side === "long"
+              ? ((b.low - entryPx) / entryPx) * 100
+              : ((entryPx - b.high) / entryPx) * 100;
+          if (movePct > mfe) mfe = movePct;
+          if (adversePct < mae) mae = adversePct;
+        }
+        const holdMin = Math.max(1, Math.round((exitMs - entryMs) / 60_000));
+        const realizedPct = ((px - entryPx) / entryPx) * 100 * (pos.side === "long" ? 1 : -1);
+
+        let verdict: string;
+        let thesisHeld: boolean | null;
+        if (reason === "target") {
+          verdict = "Thesis held — target reached.";
+          thesisHeld = true;
+        } else if (reason === "stop") {
+          // Did it ever go in our favor first? If MFE > |MAE|, the trade had
+          // legs and we got shaken out. If MAE was earlier than MFE allowed,
+          // the entry was just wrong.
+          if (mfe >= Math.abs(realizedPct)) {
+            verdict = `Faked us out — went +${mfe.toFixed(2)}% in favor first, then reversed and stopped.`;
+            thesisHeld = false;
+          } else {
+            verdict = "Wrong from entry — never moved in our favor.";
+            thesisHeld = false;
+          }
+        } else {
+          verdict =
+            realizedPct >= 0
+              ? "Time-exit green — slow grind, no clean target."
+              : "Time-exit red — thesis never materialized in the window.";
+          thesisHeld = realizedPct >= 0;
+        }
+
+        const ruleText = strategy?.rules.entry?.type ?? "unknown rule";
+        const hypothesis = strategy?.hypothesis ?? null;
+
+        await logDecision(sb, account.user_id, {
+          strategy_id: strategyId,
+          decision_type: "post_trade_review",
+          inputs: {
+            ticker: pos.ticker,
+            side: pos.side,
+            entry_price: entryPx,
+            exit_price: px,
+            entry_rule: ruleText,
+            hypothesis,
+            hold_minutes: holdMin,
+            realized_pct: realizedPct,
+            mfe_pct: mfe,
+            mae_pct: mae,
+            reason,
+            thesis_held: thesisHeld,
+          },
+          output: { thesis_held: thesisHeld },
+          rationale: `Review of ${pos.ticker} ${pos.side}: ${verdict} Held ${holdMin}m. Realized ${realizedPct >= 0 ? "+" : ""}${realizedPct.toFixed(2)}%. Max favorable +${mfe.toFixed(2)}%, max adverse ${mae.toFixed(2)}%. Strategy "${strategy?.name ?? "n/a"}" using ${ruleText}.`,
+        });
+      }
+    } catch {
+      // Review is best-effort. Don't block the exit if candle replay fails.
+    }
+
     closed.push({ ticker: pos.ticker, reason, price: px, pnl });
   }
 

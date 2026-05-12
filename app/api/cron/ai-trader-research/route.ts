@@ -49,6 +49,42 @@ async function handle(req: Request) {
     ),
   }));
 
+  // Pull most recent daily_reflection + weekly_patterns rows so the brain
+  // carries forward what it learned. Tight 7-day lookback keeps lessons
+  // relevant to the current regime.
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString();
+  const { data: lessonRows } = await sb
+    .from("ai_decisions")
+    .select("decision_type, output, rationale, created_at")
+    .eq("user_id", profile.id)
+    .in("decision_type", ["daily_reflection", "weekly_patterns"])
+    .gte("created_at", sevenDaysAgo)
+    .order("created_at", { ascending: false })
+    .limit(8);
+  const recentLessons: string[] = [];
+  for (const row of (lessonRows ?? []) as Array<{
+    decision_type: string;
+    output: unknown;
+    rationale: string;
+  }>) {
+    const out = row.output as { lessons?: string[] | string; patterns?: Array<{ hypothesis?: string }> } | null;
+    if (row.decision_type === "daily_reflection") {
+      const raw = out?.lessons;
+      if (Array.isArray(raw)) {
+        for (const l of raw) if (typeof l === "string" && l.trim()) recentLessons.push(l.trim());
+      } else if (typeof raw === "string" && raw.trim()) {
+        // Older rows may have packed lessons into a single string. Split on
+        // the "(N)" numbering the reflection writer uses.
+        const parts = raw.split(/\(\d+\)\s*/g).map((p) => p.trim()).filter(Boolean);
+        for (const p of parts) recentLessons.push(p);
+      }
+    } else if (row.decision_type === "weekly_patterns") {
+      for (const p of out?.patterns ?? []) {
+        if (p.hypothesis) recentLessons.push(`Weekly pattern — ${p.hypothesis}`);
+      }
+    }
+  }
+
   const ctx: GenerationContext = {
     todayDate: new Date().toISOString().slice(0, 10),
     userTier: "elite",
@@ -58,6 +94,7 @@ async function handle(req: Request) {
       qqqPct: QQQ?.changePct ?? null,
       vixLevel: VIX?.price ?? null,
     },
+    recentLessons: recentLessons.slice(0, 6),
   };
 
   const generated = await generateHypotheses(ctx);
