@@ -1,34 +1,45 @@
 import { NextResponse } from "next/server";
 import { adminClient } from "@/lib/admin";
 import { getQuotes } from "@/lib/yahoo";
-import { getAiTraderProfile, isCronAuthorized } from "@/lib/aiTrader";
+import {
+  getAllAiTraderProfiles,
+  isCronAuthorized,
+  type AiProfileConfig,
+  type AiTraderProfile,
+} from "@/lib/aiTrader";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 // End-of-day reflection. Reads today's trades, exits, post-trade reviews, and
-// tick pulses for the AI trader; writes a single `daily_reflection` row that
-// captures what happened, what was missed, and what tomorrow's brain should
+// tick pulses for each AI profile; writes one `daily_reflection` row per AI
+// capturing what happened, what was missed, and what tomorrow's brain should
 // carry forward. Pure data — no email, no notifications.
-async function handle(req: Request) {
-  if (!isCronAuthorized(req)) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-
-  const profile = await getAiTraderProfile();
-  if (!profile?.id || !profile.active_account_id) {
-    return NextResponse.json({ error: "AI Trader not initialized" }, { status: 400 });
-  }
+async function reflectForProfile(
+  config: AiProfileConfig,
+  profile: AiTraderProfile,
+  quotes: Record<string, { price: number; changePct: number }>,
+): Promise<{ slug: string; trades: number; closed: number; pnl: number; lessons_count: number; error?: string }> {
   const sb = adminClient();
+  const result = { slug: config.slug, trades: 0, closed: 0, pnl: 0, lessons_count: 0 } as {
+    slug: string;
+    trades: number;
+    closed: number;
+    pnl: number;
+    lessons_count: number;
+    error?: string;
+  };
+  if (!profile.active_account_id) {
+    result.error = "no active account";
+    return result;
+  }
 
-  // Today bounds in UTC. End-of-day cron fires after market close, so "today"
-  // in ET maps cleanly to a UTC calendar day for our purposes here.
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   const todayStartIso = todayStart.toISOString();
 
-  const [tradesRes, decisionsRes, accountRes, quotesRes] = await Promise.all([
+  const [tradesRes, decisionsRes, accountRes] = await Promise.all([
     sb
       .from("trades")
       .select("id, ticker, side, shares, price, realized_pnl, triggered_by, ai_strategy_id, created_at")
@@ -46,9 +57,6 @@ async function handle(req: Request) {
       .select("cash, starting_cash, status")
       .eq("id", profile.active_account_id)
       .single(),
-    getQuotes(["SPY", "QQQ", "^VIX"]).catch(
-      () => ({}) as Record<string, { price: number; changePct: number }>,
-    ),
   ]);
 
   const trades = (tradesRes.data ?? []) as Array<{
@@ -73,7 +81,6 @@ async function handle(req: Request) {
   const account = accountRes.data as
     | { cash: number; starting_cash: number; status: string }
     | null;
-  const quotes = quotesRes as Record<string, { price: number; changePct: number }>;
 
   // Aggregations
   const closedTrades = trades.filter((t) => t.realized_pnl != null);
@@ -202,6 +209,7 @@ async function handle(req: Request) {
     decision_type: "daily_reflection",
     inputs: {
       date: todayStart.toISOString().slice(0, 10),
+      brain_style: config.brainStyle,
       regime: { spy, qqq, vix, label: regime },
       trades: trades.length,
       closed: closedTrades.length,
@@ -220,19 +228,61 @@ async function handle(req: Request) {
       equity_delta_pct: equityDeltaPct,
     },
     output: { lessons },
-    rationale,
+    rationale: `[${config.displayName}] ${rationale}`,
   });
 
-  return NextResponse.json({
-    ok: true,
-    summary: {
-      date: todayStart.toISOString().slice(0, 10),
-      trades: trades.length,
-      closed: closedTrades.length,
-      pnl: totalPnl,
-      lessons_count: lessons.length,
-    },
-  });
+  result.trades = trades.length;
+  result.closed = closedTrades.length;
+  result.pnl = totalPnl;
+  result.lessons_count = lessons.length;
+  return result;
+}
+
+async function handle(req: Request) {
+  if (!isCronAuthorized(req)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const quotes = await getQuotes(["SPY", "QQQ", "^VIX"]).catch(
+    () => ({}) as Record<string, { price: number; changePct: number }>,
+  );
+
+  const all = await getAllAiTraderProfiles();
+  const results: Array<{
+    slug: string;
+    trades: number;
+    closed: number;
+    pnl: number;
+    lessons_count: number;
+    error?: string;
+  }> = [];
+  for (const { config, profile } of all) {
+    if (!profile) {
+      results.push({
+        slug: config.slug,
+        trades: 0,
+        closed: 0,
+        pnl: 0,
+        lessons_count: 0,
+        error: "not bootstrapped",
+      });
+      continue;
+    }
+    try {
+      results.push(await reflectForProfile(config, profile, quotes));
+    } catch (e) {
+      results.push({
+        slug: config.slug,
+        trades: 0,
+        closed: 0,
+        pnl: 0,
+        lessons_count: 0,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return NextResponse.json({ ok: true, results });
 }
 
 export async function GET(req: Request) {

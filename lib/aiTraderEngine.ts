@@ -3,7 +3,7 @@ import { adminClient } from "@/lib/admin";
 import { getCandles, getQuote } from "@/lib/yahoo";
 import type { StrategyRules, EntryRule, EntryEval } from "@/lib/aiLab";
 import { evalOteLong, evalOteShort, computeStdvOpenLevels, evalVwapBounceLong, evalVwapBounceShort } from "@/lib/aiLab";
-import { getAiTraderProfile } from "@/lib/aiTrader";
+import { getAiTraderProfile, getAllAiTraderProfiles } from "@/lib/aiTrader";
 import { getFuturesSpec, instrumentType, computeRealizedPnl, computeUnrealizedPnl } from "@/lib/instruments";
 
 type Sb = SupabaseClient;
@@ -910,18 +910,22 @@ async function processEntries(
   return fired;
 }
 
-export async function runAiTraderTick(): Promise<TickResult> {
-  const out: TickResult = { entriesFired: [], exitsClosed: [], errors: [] };
-  const sb = adminClient();
-
-  const profile = await getAiTraderProfile();
+// Run a single AI's tick — used both by the per-slug path and by the
+// run-all-AIs loop below. Errors are captured so one failing AI doesn't
+// blow up the others.
+async function runTickForProfile(
+  sb: Sb,
+  slug: string,
+  out: TickResult,
+): Promise<void> {
+  const profile = await getAiTraderProfile(slug);
   if (!profile?.id) {
-    out.errors.push("AI Trader profile not found — run /api/admin/init-ai-trader");
-    return out;
+    out.errors.push(`[${slug}] profile not found — run /api/admin/init-ai-trader`);
+    return;
   }
   if (!profile.active_account_id) {
-    out.errors.push("AI Trader has no active account");
-    return out;
+    out.errors.push(`[${slug}] no active account`);
+    return;
   }
 
   const { data: acctRow } = await sb
@@ -930,25 +934,41 @@ export async function runAiTraderTick(): Promise<TickResult> {
     .eq("id", profile.active_account_id)
     .single();
   if (!acctRow) {
-    out.errors.push("AI Trader account not found");
-    return out;
+    out.errors.push(`[${slug}] account not found`);
+    return;
   }
   const account = acctRow as AccountRow;
   if (account.status !== "active") {
-    out.errors.push(`Account status is ${account.status}`);
-    return out;
+    out.errors.push(`[${slug}] status is ${account.status}`);
+    return;
   }
 
   try {
-    out.exitsClosed = await processExits(sb, account);
-    out.entriesFired = await processEntries(sb, account);
-    if (out.exitsClosed.length > 0 || out.entriesFired.length > 0) {
+    const exits = await processExits(sb, account);
+    const entries = await processEntries(sb, account);
+    out.exitsClosed.push(...exits);
+    out.entriesFired.push(...entries);
+    if (exits.length > 0 || entries.length > 0) {
       await snapshotEquity(sb, account.id);
     }
   } catch (e) {
-    out.errors.push(e instanceof Error ? e.message : String(e));
+    out.errors.push(`[${slug}] ${e instanceof Error ? e.message : String(e)}`);
   }
+}
 
+// Run a tick for every AI profile in the roster. This is what the cron
+// endpoint calls each ~10 minutes during market hours.
+export async function runAiTraderTick(): Promise<TickResult> {
+  const out: TickResult = { entriesFired: [], exitsClosed: [], errors: [] };
+  const sb = adminClient();
+  const all = await getAllAiTraderProfiles();
+  for (const { config, profile } of all) {
+    if (!profile) {
+      out.errors.push(`[${config.slug}] not bootstrapped`);
+      continue;
+    }
+    await runTickForProfile(sb, config.slug, out);
+  }
   return out;
 }
 

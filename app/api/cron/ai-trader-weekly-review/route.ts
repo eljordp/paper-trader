@@ -1,27 +1,40 @@
 import { NextResponse } from "next/server";
 import { adminClient } from "@/lib/admin";
 import { discoverFromTrades } from "@/lib/aiLab";
-import { getAiTraderProfile, isCronAuthorized } from "@/lib/aiTrader";
+import {
+  getAllAiTraderProfiles,
+  isCronAuthorized,
+  type AiProfileConfig,
+  type AiTraderProfile,
+} from "@/lib/aiTrader";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// Weekly pattern detector. Runs Sunday evening, reads the AI Trader's last 7
-// days of trades, calls the existing discoverFromTrades archaeologist, and
-// stores the codified patterns as a `weekly_patterns` decision row so the
-// public page surfaces "what the AI learned this week" and tomorrow's morning
-// research can pull these lessons into context.
-async function handle(req: Request) {
-  if (!isCronAuthorized(req)) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-
-  const profile = await getAiTraderProfile();
-  if (!profile?.id || !profile.active_account_id) {
-    return NextResponse.json({ error: "AI Trader not initialized" }, { status: 400 });
-  }
+// Weekly pattern detector. Runs Sunday evening for EACH AI profile, reads
+// that AI's last 7 days of trades, calls discoverFromTrades, and stores the
+// codified patterns as a `weekly_patterns` decision row.
+async function reviewForProfile(
+  config: AiProfileConfig,
+  profile: AiTraderProfile,
+): Promise<{ slug: string; closed_count: number; patterns_extracted: number; skipped?: boolean; error?: string }> {
   const sb = adminClient();
+  const result = {
+    slug: config.slug,
+    closed_count: 0,
+    patterns_extracted: 0,
+  } as {
+    slug: string;
+    closed_count: number;
+    patterns_extracted: number;
+    skipped?: boolean;
+    error?: string;
+  };
+  if (!profile.active_account_id) {
+    result.error = "no active account";
+    return result;
+  }
 
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString();
   const { data: tradesRaw } = await sb
@@ -47,11 +60,13 @@ async function handle(req: Request) {
     await sb.from("ai_decisions").insert({
       user_id: profile.id,
       decision_type: "weekly_patterns",
-      inputs: { closed_trades: closed.length, lookback_days: 7 },
+      inputs: { closed_trades: closed.length, lookback_days: 7, brain_style: config.brainStyle },
       output: { patterns: [], skipped: true },
-      rationale: `Weekly review — only ${closed.length} closed trade${closed.length === 1 ? "" : "s"} in the last 7 days. Need at least 10 to extract reliable patterns. Skipped.`,
+      rationale: `[${config.displayName}] Weekly review — only ${closed.length} closed trade${closed.length === 1 ? "" : "s"} in the last 7 days. Need at least 10 to extract reliable patterns. Skipped.`,
     });
-    return NextResponse.json({ ok: true, skipped: true, closed_count: closed.length });
+    result.skipped = true;
+    result.closed_count = closed.length;
+    return result;
   }
 
   const patterns = await discoverFromTrades({
@@ -117,6 +132,7 @@ async function handle(req: Request) {
     decision_type: "weekly_patterns",
     inputs: {
       lookback_days: 7,
+      brain_style: config.brainStyle,
       closed_trades: closed.length,
       total_pnl: totalPnl,
       win_rate: totalWins / closed.length,
@@ -125,14 +141,42 @@ async function handle(req: Request) {
       best_hour_utc: bestHour ?? null,
     },
     output: { patterns },
-    rationale,
+    rationale: `[${config.displayName}] ${rationale}`,
   });
 
-  return NextResponse.json({
-    ok: true,
-    closed_count: closed.length,
-    patterns_extracted: patterns.length,
-  });
+  result.closed_count = closed.length;
+  result.patterns_extracted = patterns.length;
+  return result;
+}
+
+async function handle(req: Request) {
+  if (!isCronAuthorized(req)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const all = await getAllAiTraderProfiles();
+  const results = [];
+  for (const { config, profile } of all) {
+    if (!profile) {
+      results.push({
+        slug: config.slug,
+        closed_count: 0,
+        patterns_extracted: 0,
+        error: "not bootstrapped",
+      });
+      continue;
+    }
+    try {
+      results.push(await reviewForProfile(config, profile));
+    } catch (e) {
+      results.push({
+        slug: config.slug,
+        closed_count: 0,
+        patterns_extracted: 0,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return NextResponse.json({ ok: true, results });
 }
 
 export async function GET(req: Request) {

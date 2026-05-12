@@ -1,60 +1,72 @@
 import { NextResponse } from "next/server";
 import { adminClient, requireOwner } from "@/lib/admin";
-import {
-  AI_TRADER_DISPLAY_NAME,
-  AI_TRADER_EMAIL,
-  AI_TRADER_SLUG,
-} from "@/lib/aiTrader";
+import { AI_PROFILES, type AiProfileConfig } from "@/lib/aiTrader";
 import { TIERS } from "@/lib/tiers";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Idempotent bootstrap. Owner-only. Creates the AI Trader auth user,
-// profile (slug=ai-trader, role=ai), and an elite-tier free-play account.
-export async function POST() {
-  await requireOwner();
+type BootstrapResult = {
+  slug: string;
+  displayName: string;
+  userId: string | null;
+  accountId: string | null;
+  publicUrl: string;
+  created: { authUser: boolean; account: boolean };
+  error?: string;
+};
+
+async function bootstrapProfile(
+  config: AiProfileConfig,
+  authUsers: Array<{ id: string; email?: string | null }>,
+): Promise<BootstrapResult> {
   const sb = adminClient();
+  const result: BootstrapResult = {
+    slug: config.slug,
+    displayName: config.displayName,
+    userId: null,
+    accountId: null,
+    publicUrl: `/u/${config.slug}`,
+    created: { authUser: false, account: false },
+  };
 
-  let userId: string | null = null;
-
-  // Try to find an existing auth user with this email by listing.
-  const { data: list } = await sb.auth.admin.listUsers({ page: 1, perPage: 200 });
-  const existing = list?.users?.find((u) => u.email === AI_TRADER_EMAIL);
+  // Find or create the auth user for this AI
+  const existing = authUsers.find((u) => u.email === config.email);
+  let userId: string;
   if (existing) {
     userId = existing.id;
   } else {
     const { data: created, error: createErr } = await sb.auth.admin.createUser({
-      email: AI_TRADER_EMAIL,
+      email: config.email,
       email_confirm: true,
       password: crypto.randomUUID() + crypto.randomUUID(),
-      user_metadata: { kind: "ai_trader" },
+      user_metadata: { kind: "ai_trader", brain_style: config.brainStyle },
     });
     if (createErr || !created.user) {
-      return NextResponse.json(
-        { error: `auth create failed: ${createErr?.message ?? "unknown"}` },
-        { status: 500 },
-      );
+      result.error = `auth create failed: ${createErr?.message ?? "unknown"}`;
+      return result;
     }
     userId = created.user.id;
+    result.created.authUser = true;
   }
+  result.userId = userId;
 
-  // Profile (the on_auth_user_created trigger seeds a basic row; patch it).
+  // Patch the profile row (the auth trigger created a basic one)
   await sb
     .from("profiles")
     .update({
-      display_name: AI_TRADER_DISPLAY_NAME,
-      slug: AI_TRADER_SLUG,
+      display_name: config.displayName,
+      slug: config.slug,
       roles: ["ai"],
-      highest_tier_unlocked: "elite",
+      highest_tier_unlocked: config.tier,
     })
     .eq("id", userId);
 
-  // Account: elite tier ($250K starting), free-play (no rules)
-  const cfg = TIERS.elite;
+  // Account at the configured tier + starting cash. Re-use if one exists.
+  const tierCfg = TIERS[config.tier];
   const { data: existingAcct } = await sb
     .from("accounts")
-    .select("id")
+    .select("id, starting_cash")
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -62,36 +74,63 @@ export async function POST() {
   if (existingAcct) {
     accountId = (existingAcct as { id: string }).id;
   } else {
+    const startingCash = config.startingCash || tierCfg.startingCash;
     const { data: acct, error: acctErr } = await sb
       .from("accounts")
       .insert({
         user_id: userId,
-        name: `${AI_TRADER_DISPLAY_NAME} — Live`,
-        tier: "elite",
-        starting_cash: cfg.startingCash,
-        cash: cfg.startingCash,
-        high_water_mark: cfg.startingCash,
+        name: `${config.displayName} — Live`,
+        tier: config.tier,
+        starting_cash: startingCash,
+        cash: startingCash,
+        high_water_mark: startingCash,
       })
       .select("id")
       .single();
     if (acctErr || !acct) {
-      return NextResponse.json(
-        { error: `account insert failed: ${acctErr?.message ?? "unknown"}` },
-        { status: 500 },
-      );
+      result.error = `account insert failed: ${acctErr?.message ?? "unknown"}`;
+      return result;
     }
     accountId = (acct as { id: string }).id;
+    result.created.account = true;
   }
+  result.accountId = accountId;
 
   await sb
     .from("profiles")
     .update({ active_account_id: accountId })
     .eq("id", userId);
 
-  return NextResponse.json({
-    ok: true,
-    userId,
-    accountId,
-    publicUrl: `/u/${AI_TRADER_SLUG}`,
-  });
+  return result;
+}
+
+// Idempotent bootstrap for ALL AI profiles in the roster. Owner-only.
+// Creates any missing auth users, patches their profile rows, and ensures
+// each has an active account at the configured tier + starting cash.
+export async function POST() {
+  await requireOwner();
+  const sb = adminClient();
+
+  // List auth users once and reuse across all profiles to save API calls.
+  const { data: list } = await sb.auth.admin.listUsers({ page: 1, perPage: 200 });
+  const authUsers = (list?.users ?? []) as Array<{ id: string; email?: string | null }>;
+
+  const results: BootstrapResult[] = [];
+  for (const config of AI_PROFILES) {
+    try {
+      results.push(await bootstrapProfile(config, authUsers));
+    } catch (e) {
+      results.push({
+        slug: config.slug,
+        displayName: config.displayName,
+        userId: null,
+        accountId: null,
+        publicUrl: `/u/${config.slug}`,
+        created: { authUser: false, account: false },
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return NextResponse.json({ ok: true, results });
 }
