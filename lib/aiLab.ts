@@ -114,6 +114,9 @@ export type GenerationContext = {
   recentLessons?: string[];
   // Brain style selects which system prompt is used. Defaults to "mixed".
   brainStyle?: "mixed" | "chart_reader" | "news" | "bear";
+  // Ticker focus — when set, the brain MUST only propose strategies on these
+  // tickers. Used by ticker-specialist bots (AI SPY, AI QQQ).
+  tickerFocus?: string[];
 };
 
 // System prompt for the structural / chart-reader AI. No magic % moves.
@@ -284,6 +287,16 @@ Expected 1-day move (1-sigma, from VIX):
 Use these numbers to size your price_drop / price_pop magnitudes — see the calibration table in the system prompt. Rules that demand more than 0.5× expected daily move within 15 minutes are almost never going to fire.
 
 ${
+  ctx.tickerFocus && ctx.tickerFocus.length > 0
+    ? `TICKER FOCUS — HARD CONSTRAINT:
+This account ONLY trades these instruments: ${ctx.tickerFocus.join(", ")}.
+Every strategy's "instruments" array MUST be a subset of that list. Do NOT propose strategies on any other ticker. If you can't find 5 setups on these instruments today, propose fewer — quality over quantity.
+
+INSTRUMENT PREFERENCE: when the focus list includes both an ETF and its futures equivalent (e.g. SPY + ES=F, or QQQ + NQ=F), STRONGLY prefer the futures contract for new strategies. Futures give better leverage and tax treatment; they're how real day traders express index views. Only use the ETF when the setup specifically requires features the futures don't offer (e.g., very tight sub-point granularity).
+
+`
+    : ""
+}${
   ctx.recentLessons && ctx.recentLessons.length > 0
     ? `LESSONS CARRIED FORWARD (from yesterday's reflection + this week's pattern detector — apply these unless you have a stronger reason not to):
 ${ctx.recentLessons.map((l, i) => `  ${i + 1}. ${l}`).join("\n")}

@@ -615,6 +615,7 @@ async function processExits(
 async function processEntries(
   sb: Sb,
   account: AccountRow,
+  slug?: string,
 ): Promise<TickResult["entriesFired"]> {
   const fired: TickResult["entriesFired"] = [];
   type PulseEntry = {
@@ -756,6 +757,14 @@ async function processEntries(
       const riskBudget =
         (Number(account.starting_cash) * accountRiskPct) / 100;
 
+      // Notional cap: a single trade can't eat more than maxNotionalPctPerTrade
+      // of the account, regardless of what the risk math says. Default 30%
+      // so the AI can carry 3+ concurrent positions. Lookup profile config
+      // by slug; fall back to 0.30 if not present.
+      const profileConfig = slug ? getAiProfileConfig(slug) : null;
+      const maxNotionalPct = profileConfig?.maxNotionalPctPerTrade ?? 0.30;
+      const maxNotional = Number(account.starting_cash) * maxNotionalPct;
+
       // Sizing diverges by instrument:
       //  - Stocks: fractional shares allowed; qty = riskBudget / stopDistance
       //  - Futures: whole contracts only; qty = floor(riskBudget / (stopDistance * pointValue))
@@ -766,10 +775,27 @@ async function processEntries(
         if (riskPerContract <= 0) continue;
         qty = Math.floor(riskBudget / riskPerContract);
         if (qty < 1) continue; // not enough room for even 1 contract at this stop distance
+        // Cap by notional value of the position (qty * pointValue * entry).
+        // For futures, notional cap is applied at 2x stock cap because futures
+        // are inherently leveraged — capping at 30% of cash would let you
+        // hold one tiny contract; 60% gives meaningful exposure.
+        const notional = qty * futSpec.pointValue * entryPrice;
+        const futuresNotionalCap = maxNotional * 2;
+        if (notional > futuresNotionalCap) {
+          qty = Math.floor(futuresNotionalCap / (futSpec.pointValue * entryPrice));
+          if (qty < 1) continue;
+        }
         marginHeld = qty * futSpec.dayTradeMargin;
       } else {
         qty = Math.floor((riskBudget / stopDistance) * 100) / 100;
         if (qty <= 0) continue;
+        // Cap by notional (qty * entry) so one trade doesn't eat the whole
+        // account. If the risk-based qty would exceed the cap, scale down.
+        const notional = qty * entryPrice;
+        if (notional > maxNotional) {
+          qty = Math.floor((maxNotional / entryPrice) * 100) / 100;
+          if (qty <= 0) continue;
+        }
       }
 
       // Cash check
@@ -949,7 +975,7 @@ async function runTickForProfile(
 
   try {
     const exits = await processExits(sb, account);
-    const entries = await processEntries(sb, account);
+    const entries = await processEntries(sb, account, slug);
     out.exitsClosed.push(...exits);
     out.entriesFired.push(...entries);
     if (exits.length > 0 || entries.length > 0) {

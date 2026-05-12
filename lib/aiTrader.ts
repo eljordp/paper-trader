@@ -18,19 +18,28 @@ export type AiProfileConfig = {
   maxTradesPerDay: number;
   shortHeadline: string;        // 1-line pitch shown in the nav strip
   fullDescription: string;      // longer paragraph on the AI's own page
+  // Optional: ticker focus. If set, the brain only proposes strategies on
+  // these tickers. Use to build ticker-specialist bots (e.g. AI QQQ trades
+  // ONLY QQQ + NQ=F). Leave undefined for generalist bots.
+  tickerFocus?: string[];
   // Optional: if the account drops below resetAtCashPct of starting cash, the
   // engine logs an `account_reset` decision and resets cash back to
   // startingCash so the AI can keep running. Used by aggressive/yolo styles
   // where blowups are part of the design.
   resetAtCashPct?: number;
+  // Cap on a single trade's notional value as a fraction of starting cash.
+  // Stops the brain from putting the whole account on one tight-stop trade.
+  // Default 0.30 (30%) so the AI can carry 3+ concurrent positions.
+  maxNotionalPctPerTrade?: number;
 };
 
 // Roster of all AI traders. Order matters — first entry is the legacy
 // "ai-trader" account that existed before the multi-AI rollout.
 export const AI_PROFILES: AiProfileConfig[] = [
   {
+    // Legacy slug kept so existing URLs and the open SPY position don't break.
     slug: "ai-trader",
-    displayName: "AI Trader",
+    displayName: "AI SPY",
     email: "ai-trader@paper-trader.local",
     brainStyle: "mixed",
     tier: "elite",
@@ -38,10 +47,27 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 1.5,
     maxConcurrentPositions: 3,
     maxTradesPerDay: 5,
-    shortHeadline:
-      "Generalist — mean-reversion, breakouts, and catalyst trades across SPY/QQQ/IWM/large-caps.",
+    tickerFocus: ["SPY", "ES=F"],
+    maxNotionalPctPerTrade: 0.30,
+    shortHeadline: "S&P 500 specialist — trades SPY and ES futures only.",
     fullDescription:
-      "The original brain. Each morning it proposes 5 strategies across mean-reversion, breakouts, and news-driven setups, then picks the two it likes best for the day. Long-biased by default. $250K account, 1.5% risk per trade — biggest balance, most cautious sizing.",
+      "Focused on the S&P 500. Brain only proposes strategies on SPY and ES=F (the e-mini S&P 500 futures contract). Prefers ES for index trades because of leverage and tax treatment, falls back to SPY when futures don't fit the setup. $250K account, 1.5% risk per trade, 30% max notional per position so it doesn't blow buying power on one fill.",
+  },
+  {
+    slug: "ai-qqq",
+    displayName: "AI QQQ",
+    email: "ai-qqq@paper-trader.local",
+    brainStyle: "mixed",
+    tier: "elite",
+    startingCash: 100000,
+    defaultRiskPct: 2.0,
+    maxConcurrentPositions: 3,
+    maxTradesPerDay: 5,
+    tickerFocus: ["QQQ", "NQ=F"],
+    maxNotionalPctPerTrade: 0.30,
+    shortHeadline: "Nasdaq-100 specialist — trades QQQ and NQ futures only.",
+    fullDescription:
+      "Focused on the Nasdaq-100. Brain only proposes strategies on QQQ and NQ=F (the e-mini Nasdaq-100 futures contract). Prefers NQ for index trades because of leverage and tax treatment, falls back to QQQ when futures don't fit the setup. $100K account, 2.0% risk per trade, 30% max notional per position.",
   },
   {
     slug: "ai-chart-reader",
@@ -53,6 +79,7 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 2.5,
     maxConcurrentPositions: 4,
     maxTradesPerDay: 6,
+    maxNotionalPctPerTrade: 0.25,
     shortHeadline:
       "Pure structural trader — breakouts, breakdowns, ICT optimal trade entries.",
     fullDescription:
@@ -68,6 +95,7 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 2.0,
     maxConcurrentPositions: 2,
     maxTradesPerDay: 3,
+    maxNotionalPctPerTrade: 0.40,
     shortHeadline: "Headline-driven — 1-3 high-conviction trades per day.",
     fullDescription:
       "Reads the morning news, picks the 1-2 tickers with the strongest catalyst, and waits for an opening-range break in the direction of the catalyst. Caps itself at 3 trades per day — quality over quantity. $100K account, 2.0% risk per trade. Most likely AI to sit out a quiet news day with zero trades.",
@@ -82,6 +110,7 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 3.5,
     maxConcurrentPositions: 4,
     maxTradesPerDay: 6,
+    maxNotionalPctPerTrade: 0.25,
     shortHeadline: "Short-only — fades pops, breakdowns, weak sectors.",
     fullDescription:
       "Only shorts. Looks for failed breakouts, breakdowns through prior-day lows, and pops that fail at resistance. Exists to balance the long-bias of the other AIs so the leaderboard never has every AI on the same side of the market. $50K account, 3.5% risk per trade — small balance, hot hands.",
@@ -96,10 +125,11 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 7.0,
     maxConcurrentPositions: 5,
     maxTradesPerDay: 10,
+    maxNotionalPctPerTrade: 0.50, // yolo gets a bigger per-trade cap
     resetAtCashPct: 0.30, // wipe + restart when down 70% from peak start
     shortHeadline: "Aggressive scaler — 7% per trade, restarts when it busts.",
     fullDescription:
-      "The YOLO account. $50K, 7% risk per trade, up to 10 trades per day. Goal: scale as fast as possible. When it inevitably busts (cash drops below 30% of starting), the engine auto-resets it to $50K and logs the blowup so we can study what went wrong. Run resets are tracked publicly — survivorship-free record. Trades the same mixed-brain strategies as AI Mixed but sized for compounding, not preservation.",
+      "The YOLO account. $50K, 7% risk per trade, up to 10 trades per day. Goal: scale as fast as possible. When it inevitably busts (cash drops below 30% of starting), the engine auto-resets it to $50K and logs the blowup so we can study what went wrong. Run resets are tracked publicly — survivorship-free record. Trades the same mixed-brain strategies as AI Trader but sized for compounding, not preservation.",
   },
 ];
 
