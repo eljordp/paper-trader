@@ -28,17 +28,27 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
     .filter((id): id is string => !!id);
 
   const accountBySlug = new Map<string, { cash: number; starting_cash: number }>();
+  const resetsBySlug = new Map<string, number>();
   if (accountIds.length > 0) {
-    const { data: accountRows } = await sb
-      .from("accounts")
-      .select("id, cash, starting_cash, user_id")
-      .in("id", accountIds);
-    const accounts = (accountRows ?? []) as Array<{
+    const profileIds = Array.from(profileBySlug.values()).map((p) => p.id);
+    const [acctRes, resetRes] = await Promise.all([
+      sb
+        .from("accounts")
+        .select("id, cash, starting_cash, user_id")
+        .in("id", accountIds),
+      sb
+        .from("ai_decisions")
+        .select("user_id")
+        .in("user_id", profileIds)
+        .eq("decision_type", "account_reset"),
+    ]);
+    const accounts = (acctRes.data ?? []) as Array<{
       id: string;
       cash: number;
       starting_cash: number;
       user_id: string;
     }>;
+    const resets = (resetRes.data ?? []) as Array<{ user_id: string }>;
     for (const cfg of AI_PROFILES) {
       const profile = profileBySlug.get(cfg.slug);
       if (!profile) continue;
@@ -48,6 +58,8 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
         cash: Number(acct.cash),
         starting_cash: Number(acct.starting_cash),
       });
+      const resetCount = resets.filter((r) => r.user_id === profile.id).length;
+      if (resetCount > 0) resetsBySlug.set(cfg.slug, resetCount);
     }
   }
 
@@ -56,7 +68,7 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
       <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--color-text-faint)]">
         AI Trader Leaderboard
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
         {AI_PROFILES.map((cfg) => {
           const acct = accountBySlug.get(cfg.slug);
           const ret =
@@ -99,6 +111,9 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
               </div>
               <div className="text-[10px] text-[var(--color-text-faint)] mt-1 font-mono">
                 ${(cfg.startingCash / 1000).toFixed(0)}K · {cfg.defaultRiskPct}% risk
+                {resetsBySlug.has(cfg.slug)
+                  ? ` · ${resetsBySlug.get(cfg.slug)} reset${resetsBySlug.get(cfg.slug) === 1 ? "" : "s"}`
+                  : ""}
                 {!isBootstrapped ? " · pending" : ""}
               </div>
             </Link>

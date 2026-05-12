@@ -18,6 +18,11 @@ export type AiProfileConfig = {
   maxTradesPerDay: number;
   shortHeadline: string;        // 1-line pitch shown in the nav strip
   fullDescription: string;      // longer paragraph on the AI's own page
+  // Optional: if the account drops below resetAtCashPct of starting cash, the
+  // engine logs an `account_reset` decision and resets cash back to
+  // startingCash so the AI can keep running. Used by aggressive/yolo styles
+  // where blowups are part of the design.
+  resetAtCashPct?: number;
 };
 
 // Roster of all AI traders. Order matters — first entry is the legacy
@@ -30,12 +35,12 @@ export const AI_PROFILES: AiProfileConfig[] = [
     brainStyle: "mixed",
     tier: "elite",
     startingCash: 250000,
-    defaultRiskPct: 0.5,
-    maxConcurrentPositions: 2,
-    maxTradesPerDay: 3,
+    defaultRiskPct: 1.5,
+    maxConcurrentPositions: 3,
+    maxTradesPerDay: 5,
     shortHeadline: "Mean-reversion + breakouts + headlines mixed together.",
     fullDescription:
-      "The original brain. Each morning it proposes 5 strategies across mean-reversion, breakouts, and news-driven setups, then picks the two it likes best for the day. Long-biased by default. $250K account, 0.5% risk per trade — the slowest hands of the four.",
+      "The original brain. Each morning it proposes 5 strategies across mean-reversion, breakouts, and news-driven setups, then picks the two it likes best for the day. Long-biased by default. $250K account, 1.5% risk per trade — biggest balance, most cautious sizing.",
   },
   {
     slug: "ai-chart-reader",
@@ -44,13 +49,13 @@ export const AI_PROFILES: AiProfileConfig[] = [
     brainStyle: "chart_reader",
     tier: "elite",
     startingCash: 100000,
-    defaultRiskPct: 1.0,
-    maxConcurrentPositions: 3,
-    maxTradesPerDay: 4,
+    defaultRiskPct: 2.5,
+    maxConcurrentPositions: 4,
+    maxTradesPerDay: 6,
     shortHeadline:
       "Pure structural trader — breakouts, breakdowns, ICT optimal trade entries.",
     fullDescription:
-      "Reads the chart like a human. Only takes trades based on structural levels — N-bar highs and lows, ICT Optimal Trade Entry (62-79% fib retraces of the most recent swing leg), and standard-deviation-of-open expansions when higher-timeframe SMT divergence is present. Never takes a trade based on an arbitrary % move. $100K account, 1.0% risk per trade — more aggressive sizing than Mixed because each setup is structurally confirmed.",
+      "Reads the chart like a human. Only takes trades based on structural levels — N-bar highs and lows, ICT Optimal Trade Entry (62-79% fib retraces of the most recent swing leg), and standard-deviation-of-open expansions when higher-timeframe SMT divergence is present. Never takes a trade based on an arbitrary % move. $100K account, 2.5% risk per trade — sizes up because each setup is structurally confirmed.",
   },
   {
     slug: "ai-news",
@@ -59,12 +64,12 @@ export const AI_PROFILES: AiProfileConfig[] = [
     brainStyle: "news",
     tier: "elite",
     startingCash: 100000,
-    defaultRiskPct: 0.75,
+    defaultRiskPct: 2.0,
     maxConcurrentPositions: 2,
-    maxTradesPerDay: 2,
-    shortHeadline: "Headline-driven — slow hands, 1-2 conviction trades per day.",
+    maxTradesPerDay: 3,
+    shortHeadline: "Headline-driven — 1-3 high-conviction trades per day.",
     fullDescription:
-      "Reads the morning news, picks the 1-2 tickers with the strongest catalyst, and waits for an opening-range break in the direction of the catalyst. Caps itself at 2 trades per day on purpose — quality over quantity. $100K account, 0.75% risk per trade. Most likely AI to sit out a quiet news day with zero trades.",
+      "Reads the morning news, picks the 1-2 tickers with the strongest catalyst, and waits for an opening-range break in the direction of the catalyst. Caps itself at 3 trades per day — quality over quantity. $100K account, 2.0% risk per trade. Most likely AI to sit out a quiet news day with zero trades.",
   },
   {
     slug: "ai-bear",
@@ -73,12 +78,27 @@ export const AI_PROFILES: AiProfileConfig[] = [
     brainStyle: "bear",
     tier: "elite",
     startingCash: 50000,
-    defaultRiskPct: 1.5,
-    maxConcurrentPositions: 3,
-    maxTradesPerDay: 4,
+    defaultRiskPct: 3.5,
+    maxConcurrentPositions: 4,
+    maxTradesPerDay: 6,
     shortHeadline: "Short-only — fades pops, breakdowns, weak sectors.",
     fullDescription:
-      "Only shorts. Looks for failed breakouts, breakdowns through prior-day lows, and pops that fail at resistance. Exists to balance the long-bias of the other three so the leaderboard never has every AI on the same side of the market. $50K account, 1.5% risk per trade — smallest balance, hottest hands.",
+      "Only shorts. Looks for failed breakouts, breakdowns through prior-day lows, and pops that fail at resistance. Exists to balance the long-bias of the other AIs so the leaderboard never has every AI on the same side of the market. $50K account, 3.5% risk per trade — small balance, hot hands.",
+  },
+  {
+    slug: "ai-scaler",
+    displayName: "AI Scaler",
+    email: "ai-scaler@paper-trader.local",
+    brainStyle: "mixed",
+    tier: "elite",
+    startingCash: 50000,
+    defaultRiskPct: 7.0,
+    maxConcurrentPositions: 5,
+    maxTradesPerDay: 10,
+    resetAtCashPct: 0.30, // wipe + restart when down 70% from peak start
+    shortHeadline: "Aggressive scaler — 7% per trade, restarts when it busts.",
+    fullDescription:
+      "The YOLO account. $50K, 7% risk per trade, up to 10 trades per day. Goal: scale as fast as possible. When it inevitably busts (cash drops below 30% of starting), the engine auto-resets it to $50K and logs the blowup so we can study what went wrong. Run resets are tracked publicly — survivorship-free record. Trades the same mixed-brain strategies as AI Mixed but sized for compounding, not preservation.",
   },
 ];
 

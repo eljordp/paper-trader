@@ -3,7 +3,11 @@ import { adminClient } from "@/lib/admin";
 import { getCandles, getQuote } from "@/lib/yahoo";
 import type { StrategyRules, EntryRule, EntryEval } from "@/lib/aiLab";
 import { evalOteLong, evalOteShort, computeStdvOpenLevels, evalVwapBounceLong, evalVwapBounceShort } from "@/lib/aiLab";
-import { getAiTraderProfile, getAllAiTraderProfiles } from "@/lib/aiTrader";
+import {
+  getAiTraderProfile,
+  getAllAiTraderProfiles,
+  getAiProfileConfig,
+} from "@/lib/aiTrader";
 import { getFuturesSpec, instrumentType, computeRealizedPnl, computeUnrealizedPnl } from "@/lib/instruments";
 
 type Sb = SupabaseClient;
@@ -950,6 +954,79 @@ async function runTickForProfile(
     out.entriesFired.push(...entries);
     if (exits.length > 0 || entries.length > 0) {
       await snapshotEquity(sb, account.id);
+    }
+
+    // Auto-restart: profiles that opt in (resetAtCashPct set) get wiped and
+    // restarted when cash drops below threshold AND no positions are open.
+    // Each blowup is logged so the public page tracks the full survivorship-
+    // free record.
+    const config = getAiProfileConfig(slug);
+    if (config?.resetAtCashPct != null) {
+      const { data: freshAcct } = await sb
+        .from("accounts")
+        .select("id, cash, starting_cash")
+        .eq("id", account.id)
+        .single();
+      const fresh = (freshAcct as { id: string; cash: number; starting_cash: number } | null);
+      if (fresh) {
+        const threshold = Number(fresh.starting_cash) * config.resetAtCashPct;
+        const { count: openPos } = await sb
+          .from("positions")
+          .select("id", { count: "exact", head: true })
+          .eq("account_id", fresh.id);
+        if (Number(fresh.cash) < threshold && (openPos ?? 0) === 0) {
+          // Count prior resets for the reset number
+          const { count: priorResets } = await sb
+            .from("ai_decisions")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", account.user_id)
+            .eq("decision_type", "account_reset");
+          const resetNumber = (priorResets ?? 0) + 1;
+          const finalCash = Number(fresh.cash);
+          const drawdownPct =
+            ((finalCash - Number(fresh.starting_cash)) / Number(fresh.starting_cash)) *
+            100;
+
+          // Wipe the account back to starting cash
+          await sb
+            .from("accounts")
+            .update({
+              cash: Number(fresh.starting_cash),
+              high_water_mark: Number(fresh.starting_cash),
+              status: "active",
+            })
+            .eq("id", fresh.id);
+
+          // Archive any live/proposed strategies so the next research run
+          // gives the rebooted AI a clean slate.
+          await sb
+            .from("ai_strategies")
+            .update({
+              status: "archived",
+              paused_reason: `blowup #${resetNumber} reset`,
+              paused_at: new Date().toISOString(),
+            })
+            .eq("user_id", account.user_id)
+            .in("status", ["live", "proposed"]);
+
+          await logDecision(sb, account.user_id, {
+            decision_type: "account_reset",
+            inputs: {
+              reset_number: resetNumber,
+              ending_cash: finalCash,
+              starting_cash: Number(fresh.starting_cash),
+              drawdown_pct: drawdownPct,
+              threshold_pct: config.resetAtCashPct * 100,
+            },
+            output: { reset_to: Number(fresh.starting_cash) },
+            rationale: `BLOWUP #${resetNumber}. Account fell to $${finalCash.toFixed(2)} (${drawdownPct.toFixed(2)}% from start), below the ${(config.resetAtCashPct * 100).toFixed(0)}% reset threshold. Wiped strategies, reset cash to $${Number(fresh.starting_cash).toFixed(0)}. Next research cycle will start a fresh run.`,
+          });
+
+          // Reflect the cash change in the in-memory account so subsequent
+          // operations in this tick see the post-reset state.
+          account.cash = Number(fresh.starting_cash);
+        }
+      }
     }
   } catch (e) {
     out.errors.push(`[${slug}] ${e instanceof Error ? e.message : String(e)}`);
