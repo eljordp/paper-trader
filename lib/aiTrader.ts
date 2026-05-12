@@ -30,7 +30,7 @@ export type AiProfileConfig = {
 export const AI_PROFILES: AiProfileConfig[] = [
   {
     slug: "ai-trader",
-    displayName: "AI Mixed",
+    displayName: "AI Trader",
     email: "ai-trader@paper-trader.local",
     brainStyle: "mixed",
     tier: "elite",
@@ -38,7 +38,8 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 1.5,
     maxConcurrentPositions: 3,
     maxTradesPerDay: 5,
-    shortHeadline: "Mean-reversion + breakouts + headlines mixed together.",
+    shortHeadline:
+      "Generalist — mean-reversion, breakouts, and catalyst trades across SPY/QQQ/IWM/large-caps.",
     fullDescription:
       "The original brain. Each morning it proposes 5 strategies across mean-reversion, breakouts, and news-driven setups, then picks the two it likes best for the day. Long-biased by default. $250K account, 1.5% risk per trade — biggest balance, most cautious sizing.",
   },

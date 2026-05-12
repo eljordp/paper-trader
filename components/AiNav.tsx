@@ -29,9 +29,10 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
 
   const accountBySlug = new Map<string, { cash: number; starting_cash: number }>();
   const resetsBySlug = new Map<string, number>();
+  const liveBySlug = new Map<string, Array<{ name: string; instruments: string[] }>>();
   if (accountIds.length > 0) {
     const profileIds = Array.from(profileBySlug.values()).map((p) => p.id);
-    const [acctRes, resetRes] = await Promise.all([
+    const [acctRes, resetRes, stratRes] = await Promise.all([
       sb
         .from("accounts")
         .select("id, cash, starting_cash, user_id")
@@ -41,6 +42,12 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
         .select("user_id")
         .in("user_id", profileIds)
         .eq("decision_type", "account_reset"),
+      sb
+        .from("ai_strategies")
+        .select("user_id, name, instruments, created_at")
+        .in("user_id", profileIds)
+        .eq("status", "live")
+        .order("created_at", { ascending: false }),
     ]);
     const accounts = (acctRes.data ?? []) as Array<{
       id: string;
@@ -49,6 +56,11 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
       user_id: string;
     }>;
     const resets = (resetRes.data ?? []) as Array<{ user_id: string }>;
+    const strategies = (stratRes.data ?? []) as Array<{
+      user_id: string;
+      name: string;
+      instruments: string[];
+    }>;
     for (const cfg of AI_PROFILES) {
       const profile = profileBySlug.get(cfg.slug);
       if (!profile) continue;
@@ -60,6 +72,10 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
       });
       const resetCount = resets.filter((r) => r.user_id === profile.id).length;
       if (resetCount > 0) resetsBySlug.set(cfg.slug, resetCount);
+      const live = strategies
+        .filter((s) => s.user_id === profile.id)
+        .slice(0, 3);
+      if (live.length > 0) liveBySlug.set(cfg.slug, live);
     }
   }
 
@@ -109,6 +125,20 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
               <div className="text-[11px] text-[var(--color-text-dim)] leading-snug mt-1">
                 {cfg.shortHeadline}
               </div>
+              {liveBySlug.has(cfg.slug) && (
+                <div className="text-[10px] text-[var(--color-up)] mt-1.5 leading-snug">
+                  <span className="uppercase tracking-wider text-[9px] text-[var(--color-text-faint)] mr-1">
+                    Live now
+                  </span>
+                  {liveBySlug.get(cfg.slug)!.map((s, i) => (
+                    <span key={i}>
+                      {i > 0 ? " · " : ""}
+                      <span className="font-mono">{s.instruments.join("/")}</span>{" "}
+                      <span className="text-[var(--color-text-dim)]">{s.name}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="text-[10px] text-[var(--color-text-faint)] mt-1 font-mono">
                 ${(cfg.startingCash / 1000).toFixed(0)}K · {cfg.defaultRiskPct}% risk
                 {resetsBySlug.has(cfg.slug)
