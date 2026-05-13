@@ -224,6 +224,94 @@ export type NewsItem = {
   relatedTickers: string[];
 };
 
+export type OptionContract = {
+  contractSymbol: string;
+  strike: number;
+  lastPrice: number;
+  bid: number;
+  ask: number;
+  volume: number;
+  openInterest: number;
+  impliedVolatility: number;
+  inTheMoney: boolean;
+  expiration: Date;
+};
+
+export type OptionsChain = {
+  underlying: string;
+  underlyingPrice: number;
+  expirationDates: Date[];
+  // Map from expiration epoch (seconds) → calls/puts
+  byExpiration: Record<number, { calls: OptionContract[]; puts: OptionContract[] }>;
+};
+
+// Fetch the options chain for an underlying. By default returns the FIRST
+// expiration's strikes (typically the nearest weekly). Pass `expiration` to
+// target a specific date.
+export async function getOptionsChain(
+  underlying: string,
+  expiration?: Date,
+): Promise<OptionsChain | null> {
+  try {
+    const result = await yahooFinance.options(
+      underlying,
+      expiration ? { date: expiration } : undefined,
+    );
+    const r = result as {
+      underlyingSymbol: string;
+      expirationDates: Date[];
+      quote: { regularMarketPrice?: number };
+      options: Array<{
+        expirationDate: Date;
+        calls: OptionContract[];
+        puts: OptionContract[];
+      }>;
+    };
+    const price = r.quote?.regularMarketPrice ?? 0;
+    const byExpiration: OptionsChain["byExpiration"] = {};
+    for (const exp of r.options ?? []) {
+      const k = Math.floor(new Date(exp.expirationDate).getTime() / 1000);
+      byExpiration[k] = {
+        calls: exp.calls ?? [],
+        puts: exp.puts ?? [],
+      };
+    }
+    return {
+      underlying: r.underlyingSymbol,
+      underlyingPrice: price,
+      expirationDates: r.expirationDates ?? [],
+      byExpiration,
+    };
+  } catch (e) {
+    console.warn(`[yahoo] options() failed for ${underlying}:`, e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+// Get the live mid price for a specific contract by re-fetching the chain
+// at the contract's expiration and finding the matching strike. Used by the
+// engine for mark-to-market on open option positions.
+export async function getOptionMidPrice(
+  underlying: string,
+  expiration: Date,
+  strike: number,
+  optionType: "call" | "put",
+): Promise<number | null> {
+  const chain = await getOptionsChain(underlying, expiration);
+  if (!chain) return null;
+  const k = Math.floor(new Date(expiration).getTime() / 1000);
+  const slot = chain.byExpiration[k];
+  if (!slot) return null;
+  const list = optionType === "call" ? slot.calls : slot.puts;
+  const match = list.find((c) => Math.abs(c.strike - strike) < 0.01);
+  if (!match) return null;
+  // Prefer mid (bid+ask)/2 when both available; fall back to last.
+  if (match.bid > 0 && match.ask > 0) {
+    return (match.bid + match.ask) / 2;
+  }
+  return match.lastPrice || null;
+}
+
 export async function getNews(symbol?: string): Promise<NewsItem[]> {
   const query = symbol ?? "SPY";
   const r = await yahooFinance.search(query, { quotesCount: 0, newsCount: 20 });

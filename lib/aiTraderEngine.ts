@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { adminClient } from "@/lib/admin";
-import { getCandles, getQuote } from "@/lib/yahoo";
+import { getCandles, getQuote, getOptionsChain, getOptionMidPrice } from "@/lib/yahoo";
 import type { StrategyRules, EntryRule, EntryEval } from "@/lib/aiLab";
 import { evalOteLong, evalOteShort, computeStdvOpenLevels, evalVwapBounceLong, evalVwapBounceShort } from "@/lib/aiLab";
 import {
@@ -8,7 +8,16 @@ import {
   getAllAiTraderProfiles,
   getAiProfileConfig,
 } from "@/lib/aiTrader";
-import { getFuturesSpec, instrumentType, computeRealizedPnl, computeUnrealizedPnl } from "@/lib/instruments";
+import {
+  getFuturesSpec,
+  instrumentType,
+  computeRealizedPnl,
+  computeUnrealizedPnl,
+  parseOptionSymbol,
+  pickAtmStrike,
+  pickExpiration,
+  OPTION_CONTRACT_MULTIPLIER,
+} from "@/lib/instruments";
 
 type Sb = SupabaseClient;
 
@@ -940,6 +949,383 @@ async function processEntries(
   return fired;
 }
 
+// Direction maps from a strategy's entry rule type to call vs put.
+// Bullish rules → call; bearish rules → put. side: "short" is rejected
+// upstream so this function only sees side: "long".
+function optionDirectionFromRule(rule: EntryRule): "call" | "put" | null {
+  switch (rule.type) {
+    case "price_pop":
+    case "breakout_above":
+    case "ote_long":
+    case "stdv_open_above":
+    case "vwap_bounce_long":
+    case "rsi_below": // oversold reversion = bullish entry
+    case "ma_cross_up":
+      return "call";
+    case "price_drop":
+    case "breakdown_below":
+    case "ote_short":
+    case "stdv_open_below":
+    case "vwap_bounce_short":
+    case "rsi_above": // overbought reversion = bearish entry
+    case "ma_cross_down":
+      return "put";
+    default:
+      return null;
+  }
+}
+
+// Options entry handler. Replaces processEntries for AIs with
+// instrumentMode === "options". The brain still proposes strategies on the
+// underlying ticker — this handler maps directional triggers to long
+// calls/puts, picks ATM next-weekly strike, sizes by premium, and stores
+// the position with ticker = OCC contract symbol.
+async function processOptionEntries(
+  sb: Sb,
+  account: AccountRow,
+  slug: string,
+): Promise<TickResult["entriesFired"]> {
+  const fired: TickResult["entriesFired"] = [];
+  type PulseEntry = { strategy: string; ticker: string; status: string; closenessPct: number };
+  const pulses: PulseEntry[] = [];
+
+  const { data: liveStrategies } = await sb
+    .from("ai_strategies")
+    .select(
+      "id, name, hypothesis, instruments, rules, max_account_risk_pct, max_concurrent_positions, max_trades_per_day, status",
+    )
+    .eq("user_id", account.user_id)
+    .eq("status", "live");
+  const strategies = (liveStrategies ?? []) as StrategyRow[];
+  if (strategies.length === 0) return fired;
+
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const profileConfig = getAiProfileConfig(slug);
+  const maxNotionalPct = profileConfig?.maxNotionalPctPerTrade ?? 0.30;
+  const maxNotional = Number(account.starting_cash) * maxNotionalPct;
+
+  for (const s of strategies) {
+    const maxTradesPerDay = s.max_trades_per_day ?? 4;
+    const { data: todayTrades } = await sb
+      .from("trades")
+      .select("id")
+      .eq("ai_strategy_id", s.id)
+      .gte("created_at", todayStart.toISOString());
+    if ((todayTrades?.length ?? 0) >= maxTradesPerDay) continue;
+
+    const { count: openCount } = await sb
+      .from("positions")
+      .select("id", { count: "exact", head: true })
+      .eq("account_id", account.id);
+    const maxConcurrent = s.max_concurrent_positions ?? 4;
+    if ((openCount ?? 0) >= maxConcurrent) continue;
+
+    // Option entries only honor side: "long" — short premium is off-limits.
+    if (s.rules.side !== "long") continue;
+    const optionType = optionDirectionFromRule(s.rules.entry);
+    if (!optionType) continue;
+
+    for (const underlying of s.instruments) {
+      // Skip futures and option contracts as underlyings — must be a stock/ETF
+      if (underlying.includes("=F") || /\d{6}[CP]\d{8}/.test(underlying)) continue;
+
+      let candles;
+      try {
+        candles = await getCandles(underlying, CANDLE_RANGE);
+      } catch {
+        continue;
+      }
+      if (!candles || candles.length < 50) continue;
+
+      const lastCandle = candles[candles.length - 1];
+      if (s.rules.time_window_utc) {
+        const hr = new Date(lastCandle.time * 1000).getUTCHours();
+        if (hr < s.rules.time_window_utc[0] || hr >= s.rules.time_window_utc[1]) continue;
+      }
+
+      const entryEval = evalEntryLastCandle(s.rules.entry, candles);
+      if (!entryEval.hit) {
+        // Reuse the same describe util via a tiny wrapper — we don't have it
+        // exported, so just push a minimal pulse entry here.
+        pulses.push({
+          strategy: s.name,
+          ticker: underlying,
+          status: `${underlying} ${s.rules.entry.type} watched (options)`,
+          closenessPct: 0,
+        });
+        continue;
+      }
+
+      // Don't double-enter — skip if we already opened a contract on this
+      // strategy in the last hour.
+      const sixtyMinAgo = new Date(Date.now() - 60 * 60_000).toISOString();
+      const { count: recentCount } = await sb
+        .from("trades")
+        .select("id", { count: "exact", head: true })
+        .eq("ai_strategy_id", s.id)
+        .gte("created_at", sixtyMinAgo);
+      if ((recentCount ?? 0) > 0) continue;
+
+      // Fetch chain, pick expiration + strike
+      const chain = await getOptionsChain(underlying);
+      if (!chain || chain.expirationDates.length === 0) continue;
+      const expiration = pickExpiration(chain.expirationDates, 3);
+      if (!expiration) continue;
+      const k = Math.floor(new Date(expiration).getTime() / 1000);
+      const slot = chain.byExpiration[k];
+      if (!slot) continue;
+      const contractsList = optionType === "call" ? slot.calls : slot.puts;
+      if (contractsList.length === 0) continue;
+      const allStrikes = contractsList.map((c) => c.strike);
+      const strike = pickAtmStrike(allStrikes, chain.underlyingPrice);
+      if (strike == null) continue;
+      const contract = contractsList.find((c) => Math.abs(c.strike - strike) < 0.01);
+      if (!contract) continue;
+      // Mid price preferred; fall back to last
+      let premium = 0;
+      if (contract.bid > 0 && contract.ask > 0) {
+        premium = (contract.bid + contract.ask) / 2;
+      } else {
+        premium = contract.lastPrice;
+      }
+      if (premium <= 0) continue;
+
+      const riskPct = s.max_account_risk_pct ?? 4.0;
+      const riskBudget = (Number(account.starting_cash) * riskPct) / 100;
+      // For long calls/puts, max loss per contract = premium × multiplier.
+      // contracts = floor(riskBudget / max_loss_per_contract)
+      const maxLossPerContract = premium * OPTION_CONTRACT_MULTIPLIER;
+      let qty = Math.floor(riskBudget / maxLossPerContract);
+      if (qty < 1) continue;
+
+      // Notional cap
+      let cashRequired = qty * premium * OPTION_CONTRACT_MULTIPLIER;
+      if (cashRequired > maxNotional) {
+        qty = Math.floor(maxNotional / (premium * OPTION_CONTRACT_MULTIPLIER));
+        if (qty < 1) continue;
+        cashRequired = qty * premium * OPTION_CONTRACT_MULTIPLIER;
+      }
+      if (cashRequired > Number(account.cash)) continue;
+
+      // Premium stop / target levels
+      const stopPct = s.rules.exit.stop_loss_pct;
+      const targetPct = s.rules.exit.take_profit_pct;
+      const stopPremium = premium * (1 - stopPct / 100);
+      const targetPremium = premium * (1 + targetPct / 100);
+      if (stopPremium >= premium || targetPremium <= premium) continue; // sanity
+
+      await sb.from("positions").insert({
+        account_id: account.id,
+        ticker: contract.contractSymbol,
+        shares: qty,
+        avg_cost: premium,
+        stop_loss: stopPremium,
+        take_profit: targetPremium,
+        side: "long",
+        instrument_type: "option",
+        margin_held: 0,
+      });
+
+      const total = qty * premium * OPTION_CONTRACT_MULTIPLIER;
+      const { data: tradeRow } = await sb
+        .from("trades")
+        .insert({
+          account_id: account.id,
+          ticker: contract.contractSymbol,
+          side: "buy",
+          shares: qty,
+          price: premium,
+          total,
+          notes: `AI ${optionType.toUpperCase()}: ${s.name} · ${underlying} ${strike} exp ${new Date(expiration).toISOString().slice(0, 10)}`,
+          triggered_by: "manual",
+          ai_strategy_id: s.id,
+          instrument_type: "option",
+          contracts: qty,
+          point_value: null,
+        })
+        .select("id")
+        .single();
+
+      await sb
+        .from("accounts")
+        .update({ cash: Number(account.cash) - cashRequired })
+        .eq("id", account.id);
+      account.cash = Number(account.cash) - cashRequired;
+
+      await sb
+        .from("ai_strategies")
+        .update({ last_signal_at: new Date().toISOString() })
+        .eq("id", s.id);
+
+      await logDecision(sb, account.user_id, {
+        strategy_id: s.id,
+        trade_id: (tradeRow as { id: string } | null)?.id ?? null,
+        decision_type: "trade_filled",
+        inputs: {
+          underlying,
+          contract_symbol: contract.contractSymbol,
+          option_type: optionType,
+          strike,
+          expiration: expiration.toISOString(),
+          entry_premium: premium,
+          contracts: qty,
+          stop_premium: stopPremium,
+          target_premium: targetPremium,
+          condition: s.rules.entry,
+        },
+        output: { success: true },
+        rationale: `Bought ${qty} ${underlying} $${strike} ${optionType.toUpperCase()} exp ${new Date(expiration).toISOString().slice(0, 10)} @ $${premium.toFixed(2)} premium (strategy "${s.name}"). Premium stop $${stopPremium.toFixed(2)} (-${stopPct}%), premium target $${targetPremium.toFixed(2)} (+${targetPct}%). ${qty} contracts × $${premium.toFixed(2)} × 100 = $${total.toFixed(2)} max loss. ${riskPct}% account risk budget = $${riskBudget.toFixed(0)}.`,
+      });
+
+      fired.push({
+        strategyId: s.id,
+        ticker: contract.contractSymbol,
+        side: "long",
+        price: premium,
+      });
+    }
+  }
+
+  // Same tick-pulse pattern as stock entries, simplified.
+  if (fired.length === 0 && pulses.length > 0) {
+    const hourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
+    const { data: recent } = await sb
+      .from("ai_decisions")
+      .select("id")
+      .eq("user_id", account.user_id)
+      .eq("decision_type", "tick_pulse")
+      .gte("created_at", hourAgo)
+      .limit(1);
+    if ((recent?.length ?? 0) === 0) {
+      await logDecision(sb, account.user_id, {
+        decision_type: "tick_pulse",
+        inputs: { watching: pulses },
+        output: { fired: 0, watched: pulses.length },
+        rationale: `Tick (options): watching ${pulses.length} setup${pulses.length === 1 ? "" : "s"}, none triggered.`,
+      });
+    }
+  }
+
+  return fired;
+}
+
+// Options exits — mark-to-market each open option position via a fresh chain
+// fetch, compare current premium against stop/target levels, close on hit
+// or 1 day before expiration. Cash credited back is current_premium ×
+// contracts × 100; realized P&L is (exit_premium - entry_premium) × contracts × 100.
+async function processOptionExits(
+  sb: Sb,
+  account: AccountRow,
+): Promise<TickResult["exitsClosed"]> {
+  const closed: TickResult["exitsClosed"] = [];
+  const { data: positions } = await sb
+    .from("positions")
+    .select("id, account_id, ticker, shares, avg_cost, side, stop_loss, take_profit, opened_at, instrument_type, margin_held")
+    .eq("account_id", account.id)
+    .eq("instrument_type", "option");
+  const list = (positions ?? []) as PositionRow[];
+  if (list.length === 0) return closed;
+
+  for (const pos of list) {
+    const parsed = parseOptionSymbol(pos.ticker);
+    if (!parsed) continue;
+
+    // Resolve seeding strategy for the post-trade review later
+    const { data: trades } = await sb
+      .from("trades")
+      .select("id, ai_strategy_id, created_at")
+      .eq("account_id", account.id)
+      .eq("ticker", pos.ticker)
+      .eq("side", "buy")
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const seed = (trades?.[0] ?? null) as { id: string; ai_strategy_id: string | null; created_at: string } | null;
+
+    const currentPremium = await getOptionMidPrice(
+      parsed.underlying,
+      parsed.expiration,
+      parsed.strike,
+      parsed.optionType,
+    );
+
+    // Time exit: 1 day before expiration regardless of premium level
+    const oneDayBeforeExp = parsed.expiration.getTime() - 24 * 60 * 60_000;
+    const isTimeExit = Date.now() >= oneDayBeforeExp;
+
+    let reason: "stop" | "target" | "time_exit" | null = null;
+    let exitPremium = currentPremium ?? Number(pos.avg_cost);
+    if (currentPremium != null) {
+      if (pos.stop_loss != null && currentPremium <= Number(pos.stop_loss)) reason = "stop";
+      else if (pos.take_profit != null && currentPremium >= Number(pos.take_profit)) reason = "target";
+    }
+    if (!reason && isTimeExit) {
+      reason = "time_exit";
+      // On time exit, if we have no mid (rare expired/very near expiration),
+      // assume worst-case 0 to be conservative.
+      if (currentPremium == null) exitPremium = 0;
+    }
+    if (!reason) continue;
+
+    const entryPremium = Number(pos.avg_cost);
+    const qty = Number(pos.shares);
+    const pnl = (exitPremium - entryPremium) * qty * OPTION_CONTRACT_MULTIPLIER;
+    const cashCredited = exitPremium * qty * OPTION_CONTRACT_MULTIPLIER;
+
+    // Close trade
+    await sb.from("trades").insert({
+      account_id: account.id,
+      ticker: pos.ticker,
+      side: "sell",
+      shares: qty,
+      price: exitPremium,
+      total: cashCredited,
+      realized_pnl: pnl,
+      triggered_by: reason,
+      ai_strategy_id: seed?.ai_strategy_id ?? null,
+      instrument_type: "option",
+      contracts: qty,
+      point_value: null,
+      exited_at: new Date().toISOString(),
+    });
+
+    // Refresh seeding trade with exited_at + realized_pnl summary
+    if (seed?.id) {
+      await sb
+        .from("trades")
+        .update({ exited_at: new Date().toISOString(), realized_pnl: pnl })
+        .eq("id", seed.id);
+    }
+
+    await sb.from("positions").delete().eq("id", pos.id);
+    await sb
+      .from("accounts")
+      .update({ cash: Number(account.cash) + cashCredited })
+      .eq("id", account.id);
+    account.cash = Number(account.cash) + cashCredited;
+
+    await logDecision(sb, account.user_id, {
+      strategy_id: seed?.ai_strategy_id ?? null,
+      decision_type: "trade_exited",
+      inputs: {
+        contract_symbol: pos.ticker,
+        underlying: parsed.underlying,
+        strike: parsed.strike,
+        option_type: parsed.optionType,
+        expiration: parsed.expiration.toISOString(),
+        exit_premium: exitPremium,
+        reason,
+      },
+      output: { realized_pnl: pnl },
+      rationale: `Closed ${qty} ${parsed.underlying} $${parsed.strike} ${parsed.optionType.toUpperCase()} @ $${exitPremium.toFixed(2)} premium — ${reason === "stop" ? "premium stop hit" : reason === "target" ? "premium target hit" : "time exit (1 day before expiration)"}. Entry premium $${entryPremium.toFixed(2)}, P&L ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}.`,
+    });
+
+    closed.push({ ticker: pos.ticker, reason, price: exitPremium, pnl });
+  }
+
+  return closed;
+}
+
 // Run a single AI's tick — used both by the per-slug path and by the
 // run-all-AIs loop below. Errors are captured so one failing AI doesn't
 // blow up the others.
@@ -974,8 +1360,14 @@ async function runTickForProfile(
   }
 
   try {
-    const exits = await processExits(sb, account);
-    const entries = await processEntries(sb, account, slug);
+    const profileCfg = getAiProfileConfig(slug);
+    const useOptions = profileCfg?.instrumentMode === "options";
+    const exits = useOptions
+      ? await processOptionExits(sb, account)
+      : await processExits(sb, account);
+    const entries = useOptions
+      ? await processOptionEntries(sb, account, slug)
+      : await processEntries(sb, account, slug);
     out.exitsClosed.push(...exits);
     out.entriesFired.push(...entries);
     if (exits.length > 0 || entries.length > 0) {

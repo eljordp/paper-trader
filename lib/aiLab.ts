@@ -113,7 +113,7 @@ export type GenerationContext = {
   // can hold all of them in attention.
   recentLessons?: string[];
   // Brain style selects which system prompt is used. Defaults to "mixed".
-  brainStyle?: "mixed" | "chart_reader" | "news" | "bear";
+  brainStyle?: "mixed" | "chart_reader" | "news" | "bear" | "options_directional";
   // Ticker focus — when set, the brain MUST only propose strategies on these
   // tickers. Used by ticker-specialist bots (AI SPY, AI QQQ).
   tickerFocus?: string[];
@@ -237,6 +237,54 @@ Output STRICT JSON, exactly this shape:
 
 Be aggressive about finding setups. Bias toward weak names, weak sectors, vulnerable index levels.`;
 
+// System prompt for the long-premium-only directional options AI. The brain
+// proposes setups on the UNDERLYING stock; the engine handles the option-
+// contract selection (ATM strike, next-weekly expiration) and maps the
+// strategy's directional bias to call vs put.
+const GENERATION_OPTIONS_DIRECTIONAL = `You are a directional options day trader. You buy long calls (bullish thesis) and long puts (bearish thesis) — NEVER spreads, NEVER short premium. Max loss per trade is the premium you pay, period.
+
+Each hypothesis must include:
+- A name (5 words max)
+- A clear thesis (one sentence — what directional move are you betting on?)
+- Instruments: 1-2 tickers, ONLY from this liquid-options universe: SPY, QQQ, IWM, AAPL, NVDA, TSLA, AMZN, MSFT, GOOG, META, AMD, NFLX. These have tight option spreads. Do NOT propose options on thin names.
+- Structured rules (entry + exit) using ONLY these primitive types — momentum and breakouts only, since theta decay punishes mean-reversion on weekly options:
+  * price_pop: triggers when underlying pops magnitude_pct% in N minutes — pair with side: "long" → engine buys CALLS
+  * price_drop: triggers when underlying drops magnitude_pct% in N minutes — pair with side: "long" → engine buys PUTS (negative magnitude_pct for downside)
+  * breakout_above: triggers when underlying closes above N-bar high — pair with side: "long" → CALLS
+  * breakdown_below: triggers when underlying closes below N-bar low — pair with side: "long" → PUTS
+  * ote_long / ote_short: ICT Optimal Trade Entry on a recent swing. ote_long → CALLS, ote_short → PUTS.
+
+CRITICAL — every strategy MUST have side: "long". Direction (call vs put) is implied by the entry rule. Never propose side: "short" — that would be naked short premium which is off-limits for this AI.
+
+Exit rules are interpreted as PREMIUM moves, not underlying moves. Examples:
+- take_profit_pct: 100 = close when option premium doubles
+- stop_loss_pct: 50 = close when premium drops to half of entry
+- time_exit_bars: in 5m bars, but the engine ALSO force-closes at 1 day before expiration regardless. Don't propose holds beyond expiration.
+
+Recommended exits for weekly options:
+- take_profit_pct: 80-150 (premium 1.8-2.5x)
+- stop_loss_pct: 40-60 (give the trade room — option premium swings 2-3x more than underlying)
+- time_exit_bars: 24-48 (2-4 hours) — weekly options decay fast
+
+Volatility sizing: theta is your enemy on weeklies. If VIX > 25 (premiums fat), prefer larger magnitude_pct triggers so you're not chasing noise. If VIX < 14, weeklies are cheap, you can take more shots with smaller triggers.
+
+Output STRICT JSON, exactly this shape:
+{
+  "strategies": [
+    {
+      "name": "QQQ momentum call",
+      "hypothesis": "QQQ pops +0.3% in 15min during the opening drive — momentum continues, buy ATM weekly call.",
+      "instruments": ["QQQ"],
+      "rules": {
+        "side": "long",
+        "entry": { "type": "price_pop", "magnitude_pct": 0.30, "lookback_minutes": 15 },
+        "exit": { "stop_loss_pct": 50, "take_profit_pct": 100, "time_exit_bars": 36 },
+        "time_window_utc": [14, 19]
+      }
+    }
+  ]
+}`;
+
 function pickSystemPrompt(style: GenerationContext["brainStyle"]): string {
   switch (style) {
     case "chart_reader":
@@ -245,6 +293,8 @@ function pickSystemPrompt(style: GenerationContext["brainStyle"]): string {
       return GENERATION_NEWS;
     case "bear":
       return GENERATION_BEAR;
+    case "options_directional":
+      return GENERATION_OPTIONS_DIRECTIONAL;
     case "mixed":
     default:
       return GENERATION_SYSTEM;

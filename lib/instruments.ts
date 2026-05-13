@@ -1,4 +1,39 @@
-export type InstrumentType = "stock" | "futures";
+export type InstrumentType = "stock" | "futures" | "option";
+
+// Yahoo OCC-style option contract symbol parser. Format:
+//   {UNDERLYING}{YY}{MM}{DD}{C|P}{STRIKE*1000 padded to 8 digits}
+// e.g. "SPY250620C00450000" = SPY $450 call expiring 2025-06-20
+const OPTION_SYMBOL_RE = /^([A-Z]+)(\d{6})([CP])(\d{8})$/;
+
+export type ParsedOption = {
+  underlying: string;
+  expiration: Date;     // UTC midnight on the expiration date
+  optionType: "call" | "put";
+  strike: number;
+  contractSymbol: string;
+};
+
+export function parseOptionSymbol(symbol: string): ParsedOption | null {
+  const m = symbol.match(OPTION_SYMBOL_RE);
+  if (!m) return null;
+  const [, underlying, dateStr, cp, strikeStr] = m;
+  const year = 2000 + parseInt(dateStr.slice(0, 2), 10);
+  const month = parseInt(dateStr.slice(2, 4), 10) - 1;
+  const day = parseInt(dateStr.slice(4, 6), 10);
+  const expiration = new Date(Date.UTC(year, month, day));
+  const strike = parseInt(strikeStr, 10) / 1000;
+  return {
+    underlying,
+    expiration,
+    optionType: cp === "C" ? "call" : "put",
+    strike,
+    contractSymbol: symbol,
+  };
+}
+
+export function isOptionSymbol(symbol: string): boolean {
+  return OPTION_SYMBOL_RE.test(symbol);
+}
 
 export type FuturesSpec = {
   symbol: string; // Yahoo symbol with =F suffix
@@ -160,7 +195,50 @@ export function getFuturesSpec(symbol: string): FuturesSpec | null {
 }
 
 export function instrumentType(symbol: string): InstrumentType {
-  return isFuturesSymbol(symbol) ? "futures" : "stock";
+  if (isOptionSymbol(symbol)) return "option";
+  if (isFuturesSymbol(symbol)) return "futures";
+  return "stock";
+}
+
+// Options multiplier is 100 — one contract controls 100 shares of underlying.
+// We expose it as a constant rather than hard-coding for clarity.
+export const OPTION_CONTRACT_MULTIPLIER = 100;
+
+// Pick the ATM (closest-to-money) strike from a list. Returns null if empty.
+export function pickAtmStrike(
+  strikes: number[],
+  underlyingPrice: number,
+): number | null {
+  if (strikes.length === 0) return null;
+  let best = strikes[0];
+  let bestDist = Math.abs(best - underlyingPrice);
+  for (const s of strikes) {
+    const d = Math.abs(s - underlyingPrice);
+    if (d < bestDist) {
+      best = s;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+// Pick an expiration date from a list of available expirations. Default
+// picks the FIRST expiration that is >= minDaysOut (typically the next
+// weekly Friday). If none qualify, returns the soonest.
+export function pickExpiration(
+  expirations: Date[],
+  minDaysOut: number = 3,
+): Date | null {
+  if (expirations.length === 0) return null;
+  const cutoff = Date.now() + minDaysOut * 24 * 60 * 60_000;
+  const future = expirations
+    .map((d) => new Date(d))
+    .filter((d) => d.getTime() >= cutoff)
+    .sort((a, b) => a.getTime() - b.getTime());
+  if (future.length > 0) return future[0];
+  // No expiration far enough out — return the latest available
+  const sorted = [...expirations].sort((a, b) => b.getTime() - a.getTime());
+  return sorted[0] ?? null;
 }
 
 /** Pretty-print a futures display symbol from any input form. Returns input for non-futures. */

@@ -4,7 +4,8 @@ import type { Tier } from "@/lib/tiers";
 // AI brain style. Each style picks a different system prompt in aiLab.ts so
 // the four AIs end up with genuinely different "personalities" even though
 // they share the engine.
-export type AiBrainStyle = "mixed" | "chart_reader" | "news" | "bear";
+export type AiBrainStyle = "mixed" | "chart_reader" | "news" | "bear" | "options_directional";
+export type InstrumentMode = "stock" | "options";
 
 export type AiProfileConfig = {
   slug: string;                 // URL slug, e.g. "ai-chart-reader"
@@ -31,6 +32,10 @@ export type AiProfileConfig = {
   // Stops the brain from putting the whole account on one tight-stop trade.
   // Default 0.30 (30%) so the AI can carry 3+ concurrent positions.
   maxNotionalPctPerTrade?: number;
+  // Optional: if set to "options", this AI trades long calls/puts on the
+  // underlyings it picks instead of stocks. Engine branches to the options
+  // entry/exit path for these accounts. Defaults to "stock".
+  instrumentMode?: InstrumentMode;
 };
 
 // Roster of all AI traders. Order matters — first entry is the legacy
@@ -114,6 +119,23 @@ export const AI_PROFILES: AiProfileConfig[] = [
     shortHeadline: "Short-only — fades pops, breakdowns, weak sectors.",
     fullDescription:
       "Only shorts. Looks for failed breakouts, breakdowns through prior-day lows, and pops that fail at resistance. Exists to balance the long-bias of the other AIs so the leaderboard never has every AI on the same side of the market. $50K account, 3.5% risk per trade — small balance, hot hands.",
+  },
+  {
+    slug: "ai-options",
+    displayName: "AI Options",
+    email: "ai-options@paper-trader.local",
+    brainStyle: "options_directional",
+    instrumentMode: "options",
+    tier: "elite",
+    startingCash: 25000,
+    defaultRiskPct: 4.0,
+    maxConcurrentPositions: 4,
+    maxTradesPerDay: 4,
+    maxNotionalPctPerTrade: 0.35,
+    shortHeadline:
+      "Buys ATM weekly calls/puts on SPY/QQQ/large-caps — long premium only.",
+    fullDescription:
+      "Directional options trader. Reads the same setups as the stock AIs but expresses them as long calls (bullish thesis) or long puts (bearish thesis) on the next-weekly ATM strike. Max loss per trade = premium paid × contracts × 100. No spreads, no naked short premium — keeps it simple. $25K account, 4% risk per trade. Theta works against you fast on weeklies so the brain skips mean-reversion and only trades momentum/breakout setups.",
   },
   {
     slug: "ai-scaler",
