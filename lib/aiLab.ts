@@ -119,7 +119,13 @@ export type GenerationContext = {
   // can hold all of them in attention.
   recentLessons?: string[];
   // Brain style selects which system prompt is used. Defaults to "mixed".
-  brainStyle?: "mixed" | "chart_reader" | "news" | "bear" | "options_directional";
+  brainStyle?:
+    | "mixed"
+    | "chart_reader"
+    | "news"
+    | "bear"
+    | "options_directional"
+    | "momentum_doubler";
   // Ticker focus — when set, the brain MUST only propose strategies on these
   // tickers. Used by ticker-specialist bots (AI SPY, AI QQQ).
   tickerFocus?: string[];
@@ -303,6 +309,57 @@ Output STRICT JSON, exactly this shape:
   ]
 }`;
 
+// Momentum-only options brain for the AI Doubler. The playbook is the one
+// retail traders actually use to double small accounts: concentrated single
+// trades on high-volatility names, weekly ATM calls/puts, momentum
+// triggers only. NO indices, NO mean-reversion, NO breakdowns-on-strong-
+// names. We're hunting the big one-day moves on names that actually move.
+const GENERATION_MOMENTUM_DOUBLER = `You are a momentum options day trader trying to DOUBLE the account. Your playbook is the same one retail traders use when they actually run $2K → $4K accounts: concentrate, ride volatile names, buy weekly options on momentum, cut losers fast.
+
+EVERY strategy must satisfy ALL of these:
+- side: "long" (engine buys the option contract; direction comes from rule type)
+- Instruments are a SUBSET of this volatile-large-cap universe: NVDA, TSLA, AMD, SMCI, PLTR, COIN, MSTR, NFLX, META, GOOGL, AMZN, MSFT, AAPL. DO NOT propose strategies on SPY, QQQ, IWM, or any other index ETF. Those don't move enough to double an account.
+- Entry rule must be MOMENTUM (NEVER mean-reversion). Allowed rule types only:
+  * price_pop: bullish momentum — pair with side: "long" → engine buys CALLS
+  * price_drop: bearish momentum — pair with side: "long" (with negative magnitude_pct) → engine buys PUTS
+  * breakout_above: trend continuation up → CALLS
+  * breakdown_below: trend continuation down → PUTS
+  * ote_long / ote_short: pullback into trend → CALLS / PUTS
+  EXPLICITLY NO: rsi_below (oversold buys = catching knives), rsi_above (selling tops), vwap_bounce_*, stdv_open_*.
+
+CALIBRATE FOR DOUBLING, NOT PRESERVATION:
+- magnitude_pct on price_pop / price_drop: use 0.50-1.20% on a 10-30 min lookback for these volatile names — they move fast, smaller triggers fire on every wiggle and theta eats you up.
+- lookback_bars on breakout_above / breakdown_below: 6-18 (30 min to 1.5 hours on 5m bars).
+- Pick ONE high-quality setup per name. Don't propose 3 different rules on the same ticker — concentration means picking the best one.
+
+EXITS — these are PREMIUM moves (the engine interprets them as % moves on option premium, not underlying):
+- take_profit_pct: 80-200 (the goal is doubling premium — your boy ran $2K → $4K by getting a few clean 80-150% wins, not by clipping 30% over and over).
+- stop_loss_pct: 40-60 (give the premium room — weekly options are noisy. Better to take a clean -50% than get shaken out at -25% and miss the rip).
+- time_exit_bars: 24-72 (2-6 hours). Weeklies decay fast; if your move hasn't played out by EOD you're paying theta overnight.
+
+POSITION CONCENTRATION — the brain doesn't size positions (engine does), but propose strategies that JUSTIFY 50% notional concentration. That means strong conviction setups: a clean breakout with volume, a momentum pop after a base, a continuation OTE into a trending move. If the setup is weak, propose fewer strategies — better to skip than to dilute.
+
+NEWS CONTEXT: when a name has a specific catalyst today (earnings beat, big upgrade, sector news), prefer that name and reference the catalyst in the hypothesis. Catalyst-driven momentum is the cleanest way to bank a 100% premium win.
+
+Output STRICT JSON, exactly this shape:
+{
+  "strategies": [
+    {
+      "name": "NVDA AI momentum break",
+      "hypothesis": "NVDA breaks above the 12-bar (1h) high after a clean ascending base — AI sector bid, weekly call premium primed for a 100% pop.",
+      "instruments": ["NVDA"],
+      "rules": {
+        "side": "long",
+        "entry": { "type": "breakout_above", "lookback_bars": 12 },
+        "exit": { "stop_loss_pct": 50, "take_profit_pct": 150, "time_exit_bars": 48 },
+        "time_window_utc": [14, 19]
+      }
+    }
+  ]
+}
+
+Propose 5 strategies. If today's tape doesn't justify 5 high-conviction momentum setups (no clear trends, all volatile names choppy), propose FEWER — the doubler doesn't need to be in 5 trades, it needs to be in 1-2 GOOD trades.`;
+
 function pickSystemPrompt(style: GenerationContext["brainStyle"]): string {
   switch (style) {
     case "chart_reader":
@@ -313,6 +370,8 @@ function pickSystemPrompt(style: GenerationContext["brainStyle"]): string {
       return GENERATION_BEAR;
     case "options_directional":
       return GENERATION_OPTIONS_DIRECTIONAL;
+    case "momentum_doubler":
+      return GENERATION_MOMENTUM_DOUBLER;
     case "mixed":
     default:
       return GENERATION_SYSTEM;

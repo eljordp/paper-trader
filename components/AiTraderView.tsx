@@ -229,6 +229,40 @@ export default async function AiTraderView({ slug }: { slug: string }) {
                 trade · max {config.maxTradesPerDay} trades/day ·{" "}
                 {config.maxConcurrentPositions} concurrent positions
               </div>
+              {slug === "ai-doubler" && account && (() => {
+                const target = Number(account.starting_cash) * 2;
+                const progress = Math.max(
+                  0,
+                  Math.min(
+                    100,
+                    ((equity - Number(account.starting_cash)) /
+                      Number(account.starting_cash)) *
+                      100,
+                  ),
+                );
+                const remaining = target - equity;
+                return (
+                  <div className="space-y-2 max-w-md pt-2">
+                    <div className="flex items-end justify-between gap-3">
+                      <div className="text-xs uppercase tracking-wider text-[var(--color-text-faint)]">
+                        Doubler goal
+                      </div>
+                      <div className="text-xs font-mono tnum text-[var(--color-text-dim)]">
+                        {money(equity, { cents: false })} → {money(target, { cents: false })}
+                        {remaining > 0
+                          ? ` · ${money(remaining, { cents: false })} to go`
+                          : " · BANKED"}
+                      </div>
+                    </div>
+                    <div className="h-1.5 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-[var(--color-cyan)]"
+                        style={{ width: `${progress}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>

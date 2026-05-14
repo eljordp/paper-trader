@@ -4,7 +4,13 @@ import type { Tier } from "@/lib/tiers";
 // AI brain style. Each style picks a different system prompt in aiLab.ts so
 // the four AIs end up with genuinely different "personalities" even though
 // they share the engine.
-export type AiBrainStyle = "mixed" | "chart_reader" | "news" | "bear" | "options_directional";
+export type AiBrainStyle =
+  | "mixed"
+  | "chart_reader"
+  | "news"
+  | "bear"
+  | "options_directional"
+  | "momentum_doubler";
 export type InstrumentMode = "stock" | "options";
 
 export type AiProfileConfig = {
@@ -136,6 +142,24 @@ export const AI_PROFILES: AiProfileConfig[] = [
       "Buys ATM weekly calls/puts on SPY/QQQ/large-caps — long premium only.",
     fullDescription:
       "Directional options trader. Reads the same setups as the stock AIs but expresses them as long calls (bullish thesis) or long puts (bearish thesis) on the next-weekly ATM strike. Max loss per trade = premium paid × contracts × 100. No spreads, no naked short premium — keeps it simple. $25K account, 4% risk per trade. Theta works against you fast on weeklies so the brain skips mean-reversion and only trades momentum/breakout setups.",
+  },
+  {
+    slug: "ai-doubler",
+    displayName: "AI Doubler",
+    email: "ai-doubler@paper-trader.local",
+    brainStyle: "momentum_doubler",
+    instrumentMode: "options",
+    tier: "elite",
+    startingCash: 10000,
+    defaultRiskPct: 15.0,                // huge per-trade risk — this is the retail-doubler playbook
+    maxConcurrentPositions: 2,           // concentrated, no diversification
+    maxTradesPerDay: 5,
+    maxNotionalPctPerTrade: 0.50,        // half the account on one fill
+    resetAtCashPct: 0.30,                // wipe at $3K and restart at $10K so we see every doubler attempt
+    shortHeadline:
+      "Goal: 2x the bank. Concentrated momentum options on volatile names.",
+    fullDescription:
+      "The doubler. Starts with $10K, goal $20K. Plays the exact same way retail traders actually double small accounts: 1-2 concentrated positions (50% notional cap), 15% risk per trade, momentum-only setups on high-volatility names (NVDA, TSLA, AMD, SMCI, PLTR, COIN, MSTR, NFLX, META). Buys weekly ATM calls on strength and weekly ATM puts on weakness. No mean-reversion, no SPY/QQQ index drift trades. Auto-resets to $10K when it busts under $3K so every attempt at doubling is tracked publicly. Survivorship-free record.",
   },
   {
     slug: "ai-scaler",
