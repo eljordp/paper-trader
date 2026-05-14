@@ -229,29 +229,37 @@ export default async function AiTraderView({ slug }: { slug: string }) {
                 trade · max {config.maxTradesPerDay} trades/day ·{" "}
                 {config.maxConcurrentPositions} concurrent positions
               </div>
-              {slug === "ai-doubler" && account && (() => {
-                const target = Number(account.starting_cash) * 2;
+              {slug === "ai-compounder" && account && (() => {
+                // First milestone is $100K. After that, the bar restarts
+                // toward the next 10x milestone so the AI keeps a visible
+                // growth target indefinitely. We never declare "done."
+                const startingCash = Number(account.starting_cash);
+                const first = 100000;
+                const milestone = equity < first ? first : Math.pow(10, Math.ceil(Math.log10(Math.max(equity, first) + 1))); // next power-of-10 above current
+                const prevMilestone = equity < first ? startingCash : milestone / 10;
                 const progress = Math.max(
                   0,
                   Math.min(
                     100,
-                    ((equity - Number(account.starting_cash)) /
-                      Number(account.starting_cash)) *
-                      100,
+                    ((equity - prevMilestone) / (milestone - prevMilestone)) * 100,
                   ),
                 );
-                const remaining = target - equity;
+                const remaining = milestone - equity;
+                const milestoneLabel =
+                  equity < first
+                    ? "First milestone"
+                    : `Next milestone (${(milestone / 1000).toFixed(0)}K)`;
                 return (
                   <div className="space-y-2 max-w-md pt-2">
                     <div className="flex items-end justify-between gap-3">
                       <div className="text-xs uppercase tracking-wider text-[var(--color-text-faint)]">
-                        Doubler goal
+                        {milestoneLabel}
                       </div>
                       <div className="text-xs font-mono tnum text-[var(--color-text-dim)]">
-                        {money(equity, { cents: false })} → {money(target, { cents: false })}
+                        {money(equity, { cents: false })} → {money(milestone, { cents: false })}
                         {remaining > 0
                           ? ` · ${money(remaining, { cents: false })} to go`
-                          : " · BANKED"}
+                          : " · BANKED, keep going"}
                       </div>
                     </div>
                     <div className="h-1.5 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-full overflow-hidden">
@@ -259,6 +267,9 @@ export default async function AiTraderView({ slug }: { slug: string }) {
                         className="h-full bg-[var(--color-cyan)]"
                         style={{ width: `${progress}%` }}
                       />
+                    </div>
+                    <div className="text-[10px] text-[var(--color-text-faint)]">
+                      Goal: grow indefinitely. Bot reads its own daily reflection + weekly patterns before each morning's research so it learns from its own history.
                     </div>
                   </div>
                 );
