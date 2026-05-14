@@ -54,7 +54,7 @@ export type ProposedStrategy = {
   rules: StrategyRules;
 };
 
-const GENERATION_SYSTEM = `You are a quantitative strategy designer. Given today's market state and recent news, propose 5 SPECIFIC, BACKTESTABLE trading hypotheses.
+const GENERATION_SYSTEM = `You are a quantitative strategy designer for a funded-eval account. Given today's market state and recent news, propose 2-3 CONVICTION-GRADE, BACKTESTABLE trading hypotheses. Quality over quantity — if you can't find 2 clean setups today, output 1. Never pad to hit a count.
 
 Each hypothesis must include:
 - A name (5 words max)
@@ -69,31 +69,37 @@ Each hypothesis must include:
   * stdv_open_above / stdv_open_below: Triggers when price moves k standard deviations above/below today's 9:30 ET open, using the trailing N-day stdv of intraday excursions. Use as breakout/expansion signals on trending tapes. Params: lookback_days (default 20), k_sigma (default 1.0 — try 0.5 for earlier signals, 1.5 for stronger expansion).
   * vwap_bounce_long / vwap_bounce_short: Session VWAP as SUPPORT/RESISTANCE within an established regime. Bounce long fires when price held above VWAP for min_bars_in_regime (default 6), retraced to touch VWAP within touch_within_bars (default 3), and current bar closes back up — VWAP acted as support. Mirror for short. Best for trend-day continuation entries on the retest. Stop is auto-set just past the touch low/high (structural). Params: min_bars_in_regime (default 6), touch_within_bars (default 3), touch_distance_pct (default 0.05 — how close to VWAP counts as a "touch"). NOTE: bare VWAP crosses without confirmation (no retest, no regime hold) get whipsawed all day — never propose a "cross VWAP and enter" rule.
 
-CRITICAL — VOLATILITY-SCALE YOUR THRESHOLDS:
-A rule that demands +0.5% in 15 min on a low-vol day (VIX<15, expected daily move <0.6%) will NEVER trigger — you'd be asking for ~80% of the day's range in 15 minutes. The "Expected daily move" in the context tells you what's actually achievable today. Calibrate price_drop / price_pop magnitudes by lookback window:
+CRITICAL — VOLATILITY-SCALE YOUR THRESHOLDS (don't scalp noise):
+This is a funded-eval account. The goal is to learn from real moves, not scrape 0.3% pops. Tiny entries get chopped, tiny stops get knocked out by intraday wiggle, tiny targets teach nothing. Size like an adult.
 
-  * 5-15 min lookback:  magnitude ≈ 0.15-0.30× expected daily move
-  * 15-30 min lookback: magnitude ≈ 0.25-0.50× expected daily move
-  * 30-60 min lookback: magnitude ≈ 0.40-0.80× expected daily move
-  * 60+ min lookback:   magnitude ≈ 0.60-1.20× expected daily move
+Calibrate price_drop / price_pop magnitudes by lookback window:
 
-Worked example — if expected daily move is 0.80%, a "fade the morning pop" rule with 15-min lookback should use magnitude_pct around +0.15 to +0.25, NOT +0.5. On the other end, if VIX > 25 and expected daily move is 1.8%, the same 15-min rule should use +0.3 to +0.5.
+  * 15-30 min lookback: magnitude ≈ 0.40-0.70× expected daily move
+  * 30-60 min lookback: magnitude ≈ 0.60-1.00× expected daily move
+  * 60+ min lookback:   magnitude ≈ 1.00-1.50× expected daily move
 
-For breakout_above / breakdown_below with N-bar lookbacks, prefer lookback_bars of 6-24 (30 min to 2 hours) on 5m bars — long enough to filter noise, short enough to fire within the session.
+Worked example — if expected daily move is 0.80%, a 30-min lookback fade rule should use magnitude_pct around 0.50-0.80, not 0.20. If VIX > 25 and expected daily move is 1.8%, push 30-min rules to 1.0-1.5.
 
-For exits (stop_loss_pct / take_profit_pct), scale similarly. Stops should be tight enough that R/R ≥ 1.5, and the trip distance must be reachable in the lookback window of the entry rule, not multiples of it.
+For breakout_above / breakdown_below with N-bar lookbacks, prefer lookback_bars of 12-36 (1-3 hours) on 5m bars — long enough to be a real structural break, not a noise tick.
+
+EXITS — stops with room, targets that matter:
+  * R/R ≥ 2.5 (target distance ≥ 2.5× stop distance) on every strategy. No exceptions.
+  * stop_loss_pct sized to ≥ 1.0× expected daily move (so intraday chop doesn't shake you out before the thesis develops). On SPY/QQQ with 0.8% expected daily move, that's a stop of at least 0.8% — push 1.5-2.5% on individual names.
+  * take_profit_pct ≥ 2.0× expected daily move for SPY/QQQ; larger on single-name volatility.
+  * time_exit_bars in HOURS not minutes: minimum 36 (3 hours on 5m bars), prefer 60-150. The thesis needs room to play out.
+  * Holding overnight is allowed and often necessary for the thesis to play out. Don't force exits inside the session unless the setup is genuinely intraday.
 
 Output STRICT JSON, exactly this shape:
 {
   "strategies": [
     {
       "name": "Tech selloff bounce",
-      "hypothesis": "After QQQ drops 1.5% in 30 min, mean reversion bounce within the hour.",
+      "hypothesis": "After QQQ drops 1.5% in 30 min, mean reversion bounce develops over the next several hours.",
       "instruments": ["QQQ"],
       "rules": {
         "side": "long",
         "entry": { "type": "price_drop", "magnitude_pct": -1.5, "lookback_minutes": 30 },
-        "exit": { "stop_loss_pct": -1.0, "take_profit_pct": 2.0, "time_exit_bars": 60 },
+        "exit": { "stop_loss_pct": -2.0, "take_profit_pct": 5.0, "time_exit_bars": 96 },
         "time_window_utc": [13, 19]
       }
     }
@@ -136,23 +142,23 @@ Each hypothesis must include:
   * ote_long / ote_short: ICT Optimal Trade Entry. Detects the most recent swing leg over swing_lookback_bars, triggers when price retraces into the 62-79% fib zone. Stop & target are auto-set from swing structure. Use for trend-continuation pullback entries. Params: swing_lookback_bars (60-120), fib_min (0.62), fib_max (0.79), min_swing_pct (0.5).
   * stdv_open_above / stdv_open_below: Triggers when price moves k standard deviations above/below today's 9:30 ET open, using trailing N-day stdv. ONLY propose these when there is a clear higher-timeframe SMT divergence visible (hourly or 30m, sometimes 15m) — i.e., when QQQ and SPY make divergent swing highs/lows on the higher timeframe, signaling a turn. Without that SMT context, stdv expansions whipsaw. Params: lookback_days (20), k_sigma (1.0).
 
-DO NOT use price_pop, price_drop, rsi_below, rsi_above, ma_cross_up, ma_cross_down, vwap_bounce_long, or vwap_bounce_short. Those are not how you trade. If a setup doesn't fit breakout / OTE / stdv-on-SMT, you skip it — propose fewer than 5 strategies if necessary.
+DO NOT use price_pop, price_drop, rsi_below, rsi_above, ma_cross_up, ma_cross_down, vwap_bounce_long, or vwap_bounce_short. Those are not how you trade. If a setup doesn't fit breakout / OTE / stdv-on-SMT, you skip it. Output 2-3 conviction-grade strategies max, not 5. If you can't find 2 clean structural setups today, output 1.
 
 Both LONG and SHORT setups are equally valid. Aim for a mix.
 
-Stop & target: prefer stops that sit just past the structural level you're trading (just below the broken high, just past the swing extreme for OTE). R/R target ≥ 2.0 since structural entries should pay better than mean-reversion.
+Stop & target: stops sit just past the structural level you're trading (just below the broken high, just past the swing extreme for OTE) — but never tighter than 1.0× expected daily move on SPY/QQQ. R/R ≥ 2.5 on every trade — structural entries should pay multi-day-move money. take_profit_pct ≥ 2.0× expected daily move. time_exit_bars minimum 60 (5 hours), prefer 78-150. Holding overnight is allowed and often necessary for structural targets to fill — don't force same-session exits.
 
 Output STRICT JSON, exactly this shape:
 {
   "strategies": [
     {
       "name": "QQQ 2h breakdown",
-      "hypothesis": "QQQ breaking the 24-bar low after a clean lower-high lower-low structure continues lower into prior-day low.",
+      "hypothesis": "QQQ breaking the 24-bar low after a clean lower-high lower-low structure continues lower into prior-day low and overnight follow-through.",
       "instruments": ["QQQ"],
       "rules": {
         "side": "short",
         "entry": { "type": "breakdown_below", "lookback_bars": 24 },
-        "exit": { "stop_loss_pct": 0.6, "take_profit_pct": 1.4, "time_exit_bars": 60 },
+        "exit": { "stop_loss_pct": 1.8, "take_profit_pct": 5.0, "time_exit_bars": 96 },
         "time_window_utc": [13, 20]
       }
     }
@@ -174,23 +180,29 @@ Each hypothesis must include:
   * price_drop / price_pop: triggers on % move over N minutes — useful for "fade the open reaction" or "ride the catalyst"
   * breakout_above / breakdown_below: triggers when price closes above/below N-bar high/low — useful for opening-range break in the direction of the catalyst (typical lookback_bars 6 = first 30 min)
 
-ONLY 1-2 strategies per session. Propose fewer than 5 — quality over quantity. If today's headlines don't suggest a clear catalyst, propose ZERO strategies and explain why in a final empty array.
+ONLY 1-2 strategies per session. Quality over quantity. NEVER trade without a named catalyst — if today's headlines don't suggest a clear one, propose ZERO strategies and return an empty array.
 
 For each strategy: explicitly cite which headline drove it ("Catalyst: AAPL guides above consensus") in the hypothesis sentence. Both long and short are valid — fade reactions when the catalyst is already priced in, ride them when the move feels under-extended.
 
-Magnitude calibration: news reactions are bigger than baseline daily moves. Use 0.5-1.0× expected daily move for price_pop/drop magnitudes on a 5-15 min lookback (vs 0.15-0.30× for non-news brains).
+Magnitude calibration: news reactions are bigger than baseline daily moves. Use 0.8-1.5× expected daily move for price_pop/drop magnitudes on a 15-30 min lookback.
+
+EXITS — catalysts develop over hours-to-days, not minutes:
+  * R/R ≥ 2.5 on every trade.
+  * stop_loss_pct ≥ 1.0× expected daily move (1.5-3.0% on single names — earnings reactions whip).
+  * take_profit_pct ≥ 2.5× the stop. Catalysts can run far beyond the initial reaction.
+  * time_exit_bars minimum 60, prefer 96-150. Holding overnight is allowed and often necessary — institutional flow on a catalyst plays out over multiple sessions.
 
 Output STRICT JSON, exactly this shape:
 {
   "strategies": [
     {
       "name": "NVDA guidance gap-fill",
-      "hypothesis": "Catalyst: NVDA guided revenue 5% above consensus pre-market. Long the opening-range break above the first 30-min high — institutional buying not yet priced.",
+      "hypothesis": "Catalyst: NVDA guided revenue 5% above consensus pre-market. Long the opening-range break above the first 30-min high — institutional buying plays out over the next 1-2 sessions.",
       "instruments": ["NVDA"],
       "rules": {
         "side": "long",
         "entry": { "type": "breakout_above", "lookback_bars": 6 },
-        "exit": { "stop_loss_pct": 0.8, "take_profit_pct": 2.0, "time_exit_bars": 80 },
+        "exit": { "stop_loss_pct": 2.0, "take_profit_pct": 6.0, "time_exit_bars": 120 },
         "time_window_utc": [14, 19]
       }
     }
@@ -212,23 +224,27 @@ Each hypothesis must include:
   * breakdown_below: short a clean break of an N-bar low. lookback_bars 6-24.
   * breakout_above followed by exit on stop: only if the thesis is "fake-out, this break will fail" — use a tight stop ABOVE entry as the breakout trigger and accept that you might miss some real continuations. (This is the contrarian shorting pattern — most strategies will be price_pop or breakdown_below.)
 
-DO NOT propose any long trades. side must always be "short". Five strategies, all shorts.
+DO NOT propose any long trades. side must always be "short". Output 2-3 conviction-grade shorts max, not 5. If you can't find 2 vulnerable setups today, output 1.
 
-Volatility calibration: see the expected daily move below. Sizing for short price_pop fades: magnitude_pct around 0.25-0.50× expected daily move for 15-30 min lookbacks. Sizing for breakdown_below: standard lookback_bars 12-24 on 5m bars.
+Volatility calibration: sizing for short price_pop fades: magnitude_pct around 0.60-1.00× expected daily move for 30-60 min lookbacks. Sizing for breakdown_below: lookback_bars 12-36 on 5m bars.
 
-Stop & target for shorts: stop is a % ABOVE entry, target is a % BELOW. Take_profit_pct and stop_loss_pct must be positive numbers — the engine interprets the sign based on side.
+EXITS — let the breakdown develop:
+  * R/R ≥ 2.5 on every trade. Shorts pay when the move runs, not when you scrape 0.5%.
+  * stop_loss_pct (positive number, interpreted as % above entry) ≥ 1.0× expected daily move — give it room to wiggle before invalidating.
+  * take_profit_pct (positive number, % below entry) ≥ 2.5× the stop. ≥ 2.0× expected daily move for SPY/QQQ.
+  * time_exit_bars minimum 60, prefer 96-150. Holding overnight is allowed and often necessary — breakdowns frequently follow through in the next session's pre-market.
 
 Output STRICT JSON, exactly this shape:
 {
   "strategies": [
     {
       "name": "QQQ failed pop fade",
-      "hypothesis": "QQQ pops +0.35% in 15min after a down-trending morning, into the 24-bar VWAP zone — fade the bounce, breakdown continues.",
+      "hypothesis": "QQQ pops +0.80% in 30min after a down-trending morning into the 24-bar VWAP zone — fade the bounce, breakdown continues into the close and overnight.",
       "instruments": ["QQQ"],
       "rules": {
         "side": "short",
-        "entry": { "type": "price_pop", "magnitude_pct": 0.35, "lookback_minutes": 15 },
-        "exit": { "stop_loss_pct": 0.5, "take_profit_pct": 1.2, "time_exit_bars": 60 },
+        "entry": { "type": "price_pop", "magnitude_pct": 0.80, "lookback_minutes": 30 },
+        "exit": { "stop_loss_pct": 1.8, "take_profit_pct": 5.0, "time_exit_bars": 120 },
         "time_window_utc": [14, 20]
       }
     }
@@ -261,24 +277,26 @@ Exit rules are interpreted as PREMIUM moves, not underlying moves. Examples:
 - stop_loss_pct: 50 = close when premium drops to half of entry
 - time_exit_bars: in 5m bars, but the engine ALSO force-closes at 1 day before expiration regardless. Don't propose holds beyond expiration.
 
+Output 2-3 conviction-grade strategies max, not 5. If you can't find 2 clean directional setups today, output 1.
+
 Recommended exits for weekly options:
 - take_profit_pct: 80-150 (premium 1.8-2.5x)
 - stop_loss_pct: 40-60 (give the trade room — option premium swings 2-3x more than underlying)
-- time_exit_bars: 24-48 (2-4 hours) — weekly options decay fast
+- time_exit_bars: minimum 60 (5 hours), prefer 78-150. Holding overnight is allowed on weekly options — the engine force-closes 1 day before expiration, so a Mon/Tue entry has plenty of runway. Don't cut a directional thesis at 2 hours.
 
-Volatility sizing: theta is your enemy on weeklies. If VIX > 25 (premiums fat), prefer larger magnitude_pct triggers so you're not chasing noise. If VIX < 14, weeklies are cheap, you can take more shots with smaller triggers.
+Volatility sizing: theta is your enemy on weeklies. If VIX > 25 (premiums fat), prefer larger magnitude_pct triggers so you're not chasing noise. If VIX < 14, weeklies are cheap, you can take more shots with smaller triggers — but still size the underlying entry to ≥ 0.5× expected daily move so you're entering on a real move, not noise.
 
 Output STRICT JSON, exactly this shape:
 {
   "strategies": [
     {
       "name": "QQQ momentum call",
-      "hypothesis": "QQQ pops +0.3% in 15min during the opening drive — momentum continues, buy ATM weekly call.",
+      "hypothesis": "QQQ pops +0.60% in 30min during the opening drive — momentum continues into the afternoon and possibly next session, buy ATM weekly call.",
       "instruments": ["QQQ"],
       "rules": {
         "side": "long",
-        "entry": { "type": "price_pop", "magnitude_pct": 0.30, "lookback_minutes": 15 },
-        "exit": { "stop_loss_pct": 50, "take_profit_pct": 100, "time_exit_bars": 36 },
+        "entry": { "type": "price_pop", "magnitude_pct": 0.60, "lookback_minutes": 30 },
+        "exit": { "stop_loss_pct": 50, "take_profit_pct": 100, "time_exit_bars": 96 },
         "time_window_utc": [14, 19]
       }
     }
@@ -356,7 +374,7 @@ ${ctx.recentLessons.map((l, i) => `  ${i + 1}. ${l}`).join("\n")}
 }RECENT HEADLINES:
 ${ctx.recentHeadlines.slice(0, 8).map((h, i) => `  ${i + 1}. [${h.minutesAgo}m ago] ${h.title} ${h.tickers.length ? "(" + h.tickers.join(", ") + ")" : ""}`).join("\n")}
 
-Propose 5 strategies. Return JSON only.`;
+Propose 2-3 conviction-grade strategies (1 is fine if today is thin). Return JSON only.`;
   const systemPrompt = pickSystemPrompt(ctx.brainStyle);
   try {
     const completion = await oai.chat.completions.create({
