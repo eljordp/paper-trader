@@ -7,6 +7,7 @@ import { ArrowLeft, Activity, Brain, Sparkles, AlertTriangle } from "lucide-reac
 import Avatar from "@/components/Avatar";
 import AiNav from "@/components/AiNav";
 import { getAiProfileConfig } from "@/lib/aiTrader";
+import { computeAccountEquity } from "@/lib/equity";
 
 type Strategy = {
   id: string;
@@ -172,12 +173,19 @@ export default async function AiTraderView({ slug }: { slug: string }) {
   );
 
   const liveStrategies = strategies.filter((s) => s.status === "live");
-  const equity = account ? Number(account.cash) : 0; // approx — positions value not added here
-  const returnPct = account
-    ? ((Number(account.cash) - Number(account.starting_cash)) /
-        Number(account.starting_cash)) *
-      100
-    : 0;
+  // Marked-to-market equity: cash + value of every open position. Without
+  // this the dashboard reports -28% return on AI SPY when its cash is tied
+  // up in an open SPY position that's roughly at entry. Falls back to cash-
+  // only if the equity helper can't fetch quotes (e.g., yahoo timeout).
+  const equityData = account ? await computeAccountEquity(sb, account.id) : null;
+  const equity = equityData?.equity ?? (account ? Number(account.cash) : 0);
+  const returnPct = equityData
+    ? equityData.returnPct
+    : account
+      ? ((Number(account.cash) - Number(account.starting_cash)) /
+          Number(account.starting_cash)) *
+        100
+      : 0;
 
   const memberSince = format(new Date(p.created_at), "MMM yyyy");
   const displayName = config.displayName;
@@ -235,8 +243,9 @@ export default async function AiTraderView({ slug }: { slug: string }) {
             sub={TIERS[account.tier].name}
           />
           <Stat
-            label="Cash"
-            value={money(Number(account.cash), { cents: false })}
+            label="Equity"
+            value={money(equity, { cents: false })}
+            sub={`${money(Number(account.cash), { cents: false })} cash`}
           />
           <Stat
             label="Return"

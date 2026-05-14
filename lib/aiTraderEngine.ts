@@ -95,18 +95,40 @@ function evalEntryLastCandle(
       let high = -Infinity;
       for (let j = i - rule.lookback_bars; j < i; j++)
         if (candles[j].high > high) high = candles[j].high;
-      return c.close > high && candles[i - 1].close <= high
-        ? { hit: true }
-        : { hit: false };
+      // Two ways to fire:
+      // 1. Clean close above the lookback high (the strict definition)
+      // 2. Touch-and-hold: bar's HIGH pierced the level, close is in the
+      //    upper half of the bar's range, and close is within 0.2% of the
+      //    level. This catches the "kissed and held" pattern where price
+      //    tags the breakout line on intra-bar prints but closes a tick or
+      //    two below — which was the whole story of today's ES setup.
+      const strictBreakout = c.close > high && candles[i - 1].close <= high;
+      const range = c.high - c.low;
+      const midRange = c.low + range / 2;
+      const touchAndHold =
+        c.high >= high &&
+        c.close >= midRange &&
+        c.close >= high * 0.998 &&
+        candles[i - 1].close <= high;
+      return strictBreakout || touchAndHold ? { hit: true } : { hit: false };
     }
     case "breakdown_below": {
       if (i < rule.lookback_bars) return { hit: false };
       let low = Infinity;
       for (let j = i - rule.lookback_bars; j < i; j++)
         if (candles[j].low < low) low = candles[j].low;
-      return c.close < low && candles[i - 1].close >= low
-        ? { hit: true }
-        : { hit: false };
+      // Mirror of breakout_above: strict close-below OR touch-and-hold where
+      // the bar's LOW pierced the level, close is in the lower half, and
+      // close is within 0.2% of the level.
+      const strictBreakdown = c.close < low && candles[i - 1].close >= low;
+      const range = c.high - c.low;
+      const midRange = c.low + range / 2;
+      const touchAndHold =
+        c.low <= low &&
+        c.close <= midRange &&
+        c.close <= low * 1.002 &&
+        candles[i - 1].close >= low;
+      return strictBreakdown || touchAndHold ? { hit: true } : { hit: false };
     }
     case "ote_long": {
       const candlesFull = candles.map((b) => ({ ...b, volume: b.volume ?? 0 }));

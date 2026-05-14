@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { adminClient } from "@/lib/admin";
 import { AI_PROFILES } from "@/lib/aiTrader";
+import { computeEquityForAccounts } from "@/lib/equity";
 
 // Roster strip shown at the top of every AI's public page so visitors can
 // jump between the four traders and instantly see who's winning. Each card
@@ -27,7 +28,10 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
     .map((p) => p.active_account_id)
     .filter((id): id is string => !!id);
 
-  const accountBySlug = new Map<string, { cash: number; starting_cash: number }>();
+  const accountBySlug = new Map<
+    string,
+    { cash: number; starting_cash: number; equity: number; accountId: string }
+  >();
   const resetsBySlug = new Map<string, number>();
   const liveBySlug = new Map<string, Array<{ name: string; instruments: string[] }>>();
   if (accountIds.length > 0) {
@@ -61,14 +65,20 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
       name: string;
       instruments: string[];
     }>;
+    // Marked-to-market equity for every bootstrapped AI in one batched pass
+    const equityById = await computeEquityForAccounts(sb, accountIds);
+
     for (const cfg of AI_PROFILES) {
       const profile = profileBySlug.get(cfg.slug);
       if (!profile) continue;
       const acct = accounts.find((a) => a.id === profile.active_account_id);
       if (!acct) continue;
+      const eb = equityById[acct.id];
       accountBySlug.set(cfg.slug, {
         cash: Number(acct.cash),
         starting_cash: Number(acct.starting_cash),
+        equity: eb?.equity ?? Number(acct.cash),
+        accountId: acct.id,
       });
       const resetCount = resets.filter((r) => r.user_id === profile.id).length;
       if (resetCount > 0) resetsBySlug.set(cfg.slug, resetCount);
@@ -89,7 +99,7 @@ export default async function AiNav({ currentSlug }: { currentSlug: string }) {
           const acct = accountBySlug.get(cfg.slug);
           const ret =
             acct && acct.starting_cash > 0
-              ? ((acct.cash - acct.starting_cash) / acct.starting_cash) * 100
+              ? ((acct.equity - acct.starting_cash) / acct.starting_cash) * 100
               : null;
           const isCurrent = cfg.slug === currentSlug;
           const isBootstrapped = profileBySlug.has(cfg.slug);

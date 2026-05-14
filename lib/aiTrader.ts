@@ -50,13 +50,13 @@ export const AI_PROFILES: AiProfileConfig[] = [
     tier: "elite",
     startingCash: 250000,
     defaultRiskPct: 1.5,
-    maxConcurrentPositions: 3,
-    maxTradesPerDay: 5,
+    maxConcurrentPositions: 4,
+    maxTradesPerDay: 6,
     tickerFocus: ["SPY", "ES=F"],
-    maxNotionalPctPerTrade: 0.30,
+    maxNotionalPctPerTrade: 0.10, // 10% = ~$25K per trade, realistic retail size
     shortHeadline: "S&P 500 specialist — trades SPY and ES futures only.",
     fullDescription:
-      "Focused on the S&P 500. Brain only proposes strategies on SPY and ES=F (the e-mini S&P 500 futures contract). Prefers ES for index trades because of leverage and tax treatment, falls back to SPY when futures don't fit the setup. $250K account, 1.5% risk per trade, 30% max notional per position so it doesn't blow buying power on one fill.",
+      "Focused on the S&P 500. Brain only proposes strategies on SPY and ES=F (the e-mini S&P 500 futures contract). Prefers ES for index trades because of leverage and tax treatment, falls back to SPY when futures don't fit the setup. $250K account, 1.5% risk per trade, 10% max notional per position (~$25K) so it can carry 4-6 concurrent positions without single-trade concentration.",
   },
   {
     slug: "ai-qqq",
@@ -66,13 +66,13 @@ export const AI_PROFILES: AiProfileConfig[] = [
     tier: "elite",
     startingCash: 100000,
     defaultRiskPct: 2.0,
-    maxConcurrentPositions: 3,
-    maxTradesPerDay: 5,
+    maxConcurrentPositions: 4,
+    maxTradesPerDay: 6,
     tickerFocus: ["QQQ", "NQ=F"],
-    maxNotionalPctPerTrade: 0.30,
+    maxNotionalPctPerTrade: 0.10, // 10% = ~$10K per trade
     shortHeadline: "Nasdaq-100 specialist — trades QQQ and NQ futures only.",
     fullDescription:
-      "Focused on the Nasdaq-100. Brain only proposes strategies on QQQ and NQ=F (the e-mini Nasdaq-100 futures contract). Prefers NQ for index trades because of leverage and tax treatment, falls back to QQQ when futures don't fit the setup. $100K account, 2.0% risk per trade, 30% max notional per position.",
+      "Focused on the Nasdaq-100. Brain only proposes strategies on QQQ and NQ=F (the e-mini Nasdaq-100 futures contract). Prefers NQ for index trades because of leverage and tax treatment, falls back to QQQ when futures don't fit the setup. $100K account, 2.0% risk per trade, 10% max notional per position (~$10K).",
   },
   {
     slug: "ai-chart-reader",
@@ -84,7 +84,7 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 2.5,
     maxConcurrentPositions: 4,
     maxTradesPerDay: 6,
-    maxNotionalPctPerTrade: 0.25,
+    maxNotionalPctPerTrade: 0.12, // 12% = ~$12K per trade
     shortHeadline:
       "Pure structural trader — breakouts, breakdowns, ICT optimal trade entries.",
     fullDescription:
@@ -100,7 +100,7 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 2.0,
     maxConcurrentPositions: 2,
     maxTradesPerDay: 3,
-    maxNotionalPctPerTrade: 0.40,
+    maxNotionalPctPerTrade: 0.20, // 20% = ~$20K — conviction trades, bigger but not all-in
     shortHeadline: "Headline-driven — 1-3 high-conviction trades per day.",
     fullDescription:
       "Reads the morning news, picks the 1-2 tickers with the strongest catalyst, and waits for an opening-range break in the direction of the catalyst. Caps itself at 3 trades per day — quality over quantity. $100K account, 2.0% risk per trade. Most likely AI to sit out a quiet news day with zero trades.",
@@ -115,7 +115,7 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 3.5,
     maxConcurrentPositions: 4,
     maxTradesPerDay: 6,
-    maxNotionalPctPerTrade: 0.25,
+    maxNotionalPctPerTrade: 0.15, // 15% = ~$7.5K per trade
     shortHeadline: "Short-only — fades pops, breakdowns, weak sectors.",
     fullDescription:
       "Only shorts. Looks for failed breakouts, breakdowns through prior-day lows, and pops that fail at resistance. Exists to balance the long-bias of the other AIs so the leaderboard never has every AI on the same side of the market. $50K account, 3.5% risk per trade — small balance, hot hands.",
@@ -131,7 +131,7 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 4.0,
     maxConcurrentPositions: 4,
     maxTradesPerDay: 4,
-    maxNotionalPctPerTrade: 0.35,
+    maxNotionalPctPerTrade: 0.25, // 25% = ~$6.25K of premium per trade
     shortHeadline:
       "Buys ATM weekly calls/puts on SPY/QQQ/large-caps — long premium only.",
     fullDescription:
@@ -147,7 +147,7 @@ export const AI_PROFILES: AiProfileConfig[] = [
     defaultRiskPct: 7.0,
     maxConcurrentPositions: 5,
     maxTradesPerDay: 10,
-    maxNotionalPctPerTrade: 0.50, // yolo gets a bigger per-trade cap
+    maxNotionalPctPerTrade: 0.30, // yolo gets a bigger per-trade cap, but not crazy
     resetAtCashPct: 0.30, // wipe + restart when down 70% from peak start
     shortHeadline: "Aggressive scaler — 7% per trade, restarts when it busts.",
     fullDescription:
